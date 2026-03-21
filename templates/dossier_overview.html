@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dossier Overview - {{ name }}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body class="container py-4">
+    <h1>Dossier Overview: {{ overview.name }}</h1>
+    
+    <!-- Flash Messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5>Basic Information</h5>
+                </div>
+                <div class="card-body">
+                    <ul class="list-group list-group-flush">
+                        <li class="list-group-item"><strong>Alias:</strong> {{ overview.alias or 'N/A' }}</li>
+                        <li class="list-group-item"><strong>Organization:</strong> {{ overview.organization or 'N/A' }}</li>
+                        <li class="list-group-item"><strong>IP Addresses:</strong> {{ overview.ip_addresses|join(', ') or 'None' }}</li>
+                        <li class="list-group-item"><strong>Domains:</strong> {{ overview.domains|join(', ') or 'None' }}</li>
+                        <li class="list-group-item"><strong>Emails:</strong> {{ overview.emails|join(', ') or 'None' }}</li>
+                        <li class="list-group-item"><strong>Social Media:</strong> {{ overview.social_media|join(', ') or 'None' }}</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5>WHOIS Information</h5>
+                </div>
+                <div class="card-body">
+                    {% if whois_summary %}
+                        <ul class="list-group list-group-flush">
+                            <li class="list-group-item"><strong>Domain:</strong> {{ whois_summary.domain }}</li>
+                            <li class="list-group-item"><strong>Registrar:</strong> {{ whois_summary.registrar or 'N/A' }}</li>
+                            <li class="list-group-item"><strong>Creation Date:</strong> {{ whois_summary.creation_date or 'N/A' }}</li>
+                            <li class="list-group-item"><strong>Expiration Date:</strong> {{ whois_summary.expiration_date or 'N/A' }}</li>
+                            <li class="list-group-item"><strong>Name Servers:</strong> {{ whois_summary.name_servers|join(', ') or 'N/A' }}</li>
+                            <li class="list-group-item"><strong>Status:</strong> {{ whois_summary.status|join(', ') or 'N/A' }}</li>
+                        </ul>
+                    {% else %}
+                        <p class="text-muted">No WHOIS data available. Run a WHOIS query below.</p>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- WHOIS Query Form -->
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5>Run WHOIS Query</h5>
+                </div>
+                <div class="card-body">
+                    <form method="post" action="{{ url_for('run_whois_query', name=name) }}">
+                        <div class="mb-3">
+                            <label for="domain" class="form-label">Domain</label>
+                            <input type="text" class="form-control" id="domain" name="domain" 
+                                   placeholder="example.com" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Run WHOIS</button>
+                    </form>
+                </div>
+            </div>
+            
+            <!-- Nmap Scan Form -->
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5>Run Nmap Scan</h5>
+                </div>
+                <div class="card-body">
+                    <form method="post" action="{{ url_for('run_nmap_scan_route', name=name) }}">
+                        <div class="mb-3">
+                            <label for="target" class="form-label">Target</label>
+                            <input type="text" class="form-control" id="target" name="target" 
+                                   placeholder="192.168.1.1 or example.com" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="scan_type" class="form-label">Scan Type</label>
+                            <select class="form-select" id="scan_type" name="scan_type">
+                                <option value="basic">Basic Scan (SYN, Version, OS)</option>
+                                <option value="full">Full Port Scan (All ports)</option>
+                                <option value="vuln">Vulnerability Scan</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-warning">Run Nmap</button>
+                    </form>
+                </div>
+            </div>
+            
+            <!-- OSINT Tools -->
+            <div class="card">
+                <div class="card-header">
+                    <h5>OSINT Tools</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Social Media Search</h6>
+                            <form method="post" action="{{ url_for('run_social_media_search', name=name) }}" class="mb-3">
+                                <div class="mb-2">
+                                    <input type="text" class="form-control form-control-sm" name="target" 
+                                           placeholder="username or name" required>
+                                </div>
+                                <button type="submit" class="btn btn-info btn-sm">Search Social Media</button>
+                            </form>
+                            
+                            <h6>Email Discovery</h6>
+                            <form method="post" action="{{ url_for('run_email_search', name=name) }}" class="mb-3">
+                                <div class="mb-2">
+                                    <input type="text" class="form-control form-control-sm" name="domain" 
+                                           placeholder="example.com" required>
+                                </div>
+                                <button type="submit" class="btn btn-info btn-sm">Find Emails</button>
+                            </form>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Breach Check</h6>
+                            <form method="post" action="{{ url_for('run_breach_check', name=name) }}" class="mb-3">
+                                <div class="mb-2">
+                                    <input type="email" class="form-control form-control-sm" name="email" 
+                                           placeholder="email@example.com" required>
+                                </div>
+                                <button type="submit" class="btn btn-danger btn-sm">Check Breaches</button>
+                            </form>
+                            
+                            <h6>GitHub Search</h6>
+                            <form method="post" action="{{ url_for('run_github_search', name=name) }}" class="mb-3">
+                                <div class="mb-2">
+                                    <input type="text" class="form-control form-control-sm" name="username" 
+                                           placeholder="github_username" required>
+                                </div>
+                                <button type="submit" class="btn btn-dark btn-sm">Search GitHub</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Nmap Results Section -->
+    {% if nmap_summary and nmap_summary.scans %}
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5>Nmap Scan Results</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Scan Summary</h6>
+                            <ul class="list-group list-group-flush">
+                                <li class="list-group-item"><strong>Total Scans:</strong> {{ nmap_summary.scans|length }}</li>
+                                <li class="list-group-item"><strong>Total Hosts:</strong> {{ nmap_summary.total_hosts }}</li>
+                                <li class="list-group-item"><strong>Open Ports:</strong> {{ nmap_summary.open_ports }}</li>
+                            </ul>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Recent Scans</h6>
+                            <ul class="list-group list-group-flush">
+                                {% for scan in nmap_summary.scans %}
+                                <li class="list-group-item">
+                                    <strong>{{ scan.type|title }} Scan:</strong> {{ scan.target }} 
+                                    ({{ scan.open_ports }} open ports)
+                                </li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    {% if open_ports %}
+                    <div class="mt-3">
+                        <h6>Open Ports & Services</h6>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Port</th>
+                                        <th>Protocol</th>
+                                        <th>Service</th>
+                                        <th>Product</th>
+                                        <th>Version</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for port in open_ports %}
+                                    <tr>
+                                        <td>{{ port.port }}</td>
+                                        <td>{{ port.protocol }}</td>
+                                        <td>{{ port.service or 'unknown' }}</td>
+                                        <td>{{ port.product or 'N/A' }}</td>
+                                        <td>{{ port.version or 'N/A' }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- OSINT Results Section -->
+    {% if osint_summary %}
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5>OSINT Results</h5>
+                </div>
+                <div class="card-body">
+                    <!-- Social Media Results -->
+                    {% if osint_summary.social_media and osint_summary.social_media.profiles %}
+                    <div class="mb-4">
+                        <h6>Social Media Profiles</h6>
+                        <div class="row">
+                            {% for platform, data in osint_summary.social_media.profiles.items() %}
+                            <div class="col-md-3 mb-2">
+                                <div class="card {% if data.status == 'found' %}border-success{% elif data.status == 'not_found' %}border-secondary{% else %}border-warning{% endif %}">
+                                    <div class="card-body p-2">
+                                        <small class="text-muted">{{ platform|title }}</small><br>
+                                        {% if data.status == 'found' %}
+                                            <span class="badge bg-success">Found</span>
+                                            <a href="{{ data.url }}" target="_blank" class="btn btn-sm btn-outline-primary">View</a>
+                                        {% elif data.status == 'not_found' %}
+                                            <span class="badge bg-secondary">Not Found</span>
+                                        {% else %}
+                                            <span class="badge bg-warning">Unknown</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Email Results -->
+                    {% if osint_summary.emails %}
+                    <div class="mb-4">
+                        <h6>Discovered Emails</h6>
+                        <ul class="list-group list-group-flush">
+                            {% for email in osint_summary.emails %}
+                            <li class="list-group-item">{{ email }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Breach Results -->
+                    {% if osint_summary.breaches %}
+                    <div class="mb-4">
+                        <h6>Data Breach Results</h6>
+                        {% for breach in osint_summary.breaches %}
+                        <div class="alert alert-warning">
+                            <strong>{{ breach.email }}</strong><br>
+                            {% if breach.breaches %}
+                                <small>Found in {{ breach.breaches|length }} breach(es)</small>
+                            {% else %}
+                                <small>No breaches found</small>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    
+                    <!-- GitHub Results -->
+                    {% if osint_summary.github_profiles %}
+                    <div class="mb-4">
+                        <h6>GitHub Profiles</h6>
+                        {% for profile in osint_summary.github_profiles %}
+                        <div class="card mb-2">
+                            <div class="card-body">
+                                <h6>{{ profile.username }}</h6>
+                                {% if profile.profile.name %}
+                                <p><strong>Name:</strong> {{ profile.profile.name }}</p>
+                                {% endif %}
+                                {% if profile.profile.bio %}
+                                <p><strong>Bio:</strong> {{ profile.profile.bio }}</p>
+                                {% endif %}
+                                {% if profile.profile.public_repos %}
+                                <p><strong>Public Repos:</strong> {{ profile.profile.public_repos }}</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <a href="/" class="btn btn-secondary mt-3">Back to Dossiers</a>
+</body>
+</html> 
