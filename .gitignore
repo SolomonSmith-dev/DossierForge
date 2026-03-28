@@ -1,4 +1,5 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -6,3 +7,4 @@ dossiers/
 *.db
 .env
 .DS_Store
+.pytest_cache/
