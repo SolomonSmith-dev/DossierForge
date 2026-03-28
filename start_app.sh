@@ -38,9 +38,21 @@ start_app() {
     
     # Kill any existing processes on the port
     kill_port $PORT
+
+    PYTHON_BIN=""
+    if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+        PYTHON_BIN="$VIRTUAL_ENV/bin/python"
+    else
+        PYTHON_BIN=$(command -v python3 || command -v python)
+    fi
+
+    if [ -z "$PYTHON_BIN" ]; then
+        echo "❌ Python interpreter not found. Activate your virtualenv or install Python."
+        exit 1
+    fi
     
     # Start the Flask app
-    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 app.py &
+    "$PYTHON_BIN" app.py &
     
     # Wait a moment and check if it started
     sleep 2

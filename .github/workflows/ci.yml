@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Syntax check
+        run: python -m py_compile $(git ls-files '*.py')
+
+      - name: Import check
+        run: |
+          python - <<'EOF'
+          import importlib.util, sys
+
+          for mod in ("flask", "whois", "requests"):
+              if importlib.util.find_spec(mod) is None:
+                  print(f"ERROR: {mod} not importable", file=sys.stderr)
+                  sys.exit(1)
+
+          # Verify app module loads without starting the server
+          import app as _app
+          assert hasattr(_app, "app"), "Flask app object not found in app.py"
+          print("Import check passed.")
+          EOF
+        env:
+          SECRET_KEY: ci-test-key

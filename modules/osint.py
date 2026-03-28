@@ -204,9 +204,17 @@ def search_github_info(username, dossier_path):
     }
     
     try:
+        headers = {
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'DossierForge'
+        }
+        token = os.getenv('GITHUB_TOKEN')
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+
         # GitHub API endpoint
         api_url = f'https://api.github.com/users/{username}'
-        response = requests.get(api_url, timeout=10)
+        response = requests.get(api_url, timeout=10, headers=headers)
         
         if response.status_code == 200:
             profile_data = response.json()
@@ -225,7 +233,7 @@ def search_github_info(username, dossier_path):
             
             # Get repositories
             repos_url = f'https://api.github.com/users/{username}/repos'
-            repos_response = requests.get(repos_url, timeout=10)
+            repos_response = requests.get(repos_url, timeout=10, headers=headers)
             if repos_response.status_code == 200:
                 repos_data = repos_response.json()
                 for repo in repos_data[:10]:  # Limit to 10 most recent

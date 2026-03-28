@@ -17,15 +17,17 @@ def run_nmap_scan(target, dossier_path, scan_type='basic'):
         dict: Parsed nmap data
     """
     try:
+        nmap_bin = os.getenv('NMAP_PATH', 'nmap')
+
         # Define scan options based on type
         if scan_type == 'basic':
-            args = ['nmap', '-sS', '-sV', '-O', '-oX', '-', target]
+            args = [nmap_bin, '-sS', '-sV', '-O', '-oX', '-', target]
         elif scan_type == 'full':
-            args = ['nmap', '-sS', '-sV', '-O', '-p-', '-oX', '-', target]
+            args = [nmap_bin, '-sS', '-sV', '-O', '-p-', '-oX', '-', target]
         elif scan_type == 'vuln':
-            args = ['nmap', '--script=vuln', '-sV', '-oX', '-', target]
+            args = [nmap_bin, '--script=vuln', '-sV', '-oX', '-', target]
         else:
-            args = ['nmap', '-sS', '-sV', '-O', '-oX', '-', target]
+            args = [nmap_bin, '-sS', '-sV', '-O', '-oX', '-', target]
         
         # Run nmap
         result = subprocess.run(args, capture_output=True, text=True, timeout=300)
@@ -255,4 +257,4 @@ def get_open_ports(dossier_path):
             except:
                 continue
     
-    return open_ports 
+    return open_ports

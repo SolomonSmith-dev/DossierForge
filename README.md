@@ -28,19 +28,42 @@ Built for security research and reconnaissance workflows.
 git clone https://github.com/SolomonSmith-dev/DossierForge
 cd DossierForge
 
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Set a secret key (required for Flask sessions)
-export SECRET_KEY=your-secret-key
+# Copy the example env file and fill in your values
+cp .env.example .env
+# Edit .env — at minimum set SECRET_KEY
+```
 
-# Run
+### Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `SECRET_KEY` | **Yes** | Random string used to sign Flask sessions |
+| `GITHUB_TOKEN` | No | GitHub PAT for higher GitHub API rate limits (used in GitHub lookups) |
+| `NMAP_PATH` | No | Absolute path to `nmap` if not on `$PATH` (used for nmap scans) |
+
+See `.env.example` for a template.
+
+### Run
+
+```bash
+# Load env vars from .env (bash/zsh) and start the dev server
+set -a
+. ./.env
+set +a
+
 python app.py
-# or
+# or use the helper script (respects your active virtualenv)
 bash start_app.sh
 ```
 
-Open `http://localhost:5000` in your browser.
+Open `http://localhost:5001` in your browser.
 
 ## Usage
 
