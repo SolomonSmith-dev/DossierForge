@@ -24,7 +24,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Syntax check
-        run: python -m py_compile app.py modules/whois.py modules/nmap.py modules/osint.py modules/__init__.py
+        run: python -m py_compile $(git ls-files '*.py')
 
       - name: Import check
         run: |
