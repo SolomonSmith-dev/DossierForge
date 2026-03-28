@@ -45,19 +45,21 @@ cp .env.example .env
 | Variable | Required | Description |
 |---|---|---|
 | `SECRET_KEY` | **Yes** | Random string used to sign Flask sessions |
-| `HIBP_API_KEY` | No | HaveIBeenPwned API key for real breach lookups |
-| `GITHUB_TOKEN` | No | GitHub PAT for higher GitHub API rate limits |
-| `NMAP_PATH` | No | Absolute path to `nmap` if not on `$PATH` |
+| `GITHUB_TOKEN` | No | GitHub PAT for higher GitHub API rate limits (used in GitHub lookups) |
+| `NMAP_PATH` | No | Absolute path to `nmap` if not on `$PATH` (used for nmap scans) |
 
 See `.env.example` for a template.
 
 ### Run
 
 ```bash
-# Load env vars and start the dev server
-export $(grep -v '^#' .env | xargs)
+# Load env vars from .env (bash/zsh) and start the dev server
+set -a
+. ./.env
+set +a
+
 python app.py
-# or use the provided helper script
+# or use the helper script (respects your active virtualenv)
 bash start_app.sh
 ```
 
