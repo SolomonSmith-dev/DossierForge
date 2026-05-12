@@ -1,5 +1,7 @@
 # DossierForge
 
+![CI](https://github.com/SolomonSmith-dev/DossierForge/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+
 A Flask-based OSINT dossier builder for aggregating reconnaissance data on a target. Input a name, domain, or IP. DossierForge runs WHOIS lookups, nmap port scans, and social media/email searches, then stores everything in a structured dossier for review.
 
 > **Authorized use only.** This tool is for security research, CTF practice, and reconnaissance against targets you own or have explicit written permission to scan. Running unsolicited scans or OSINT enumeration against third parties is illegal in most jurisdictions and a hard line. Use a personal lab, an HTB box, or your employer's authorized scope.
