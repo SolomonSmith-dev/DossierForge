@@ -1,248 +1,382 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
-import os
+"""DossierForge — multi-user OSINT dossier SaaS.
+
+Authorized use only. Every dossier requires the user to attest that they are
+authorized to investigate the target, and every recon action is written to an
+audit trail. Dossiers are isolated per user account.
+"""
+
 import json
-from modules.whois import run_whois, get_whois_summary
-from modules.nmap import run_nmap_scan, get_nmap_summary, get_open_ports
-from modules.osint import (
-    search_social_media,
-    search_emails,
-    check_breach_data,
-    search_github_info,
-    get_osint_summary,
+import os
+
+from flask import (
+    Flask,
+    abort,
+    flash,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
+from flask_login import (
+    LoginManager,
+    current_user,
+    login_required,
+    login_user,
+    logout_user,
 )
 
-app = Flask(__name__)
-app.secret_key = os.environ.get(
-    "SECRET_KEY", "dev-key-change-in-prod"
-)  # For flash messages
-DOSSIERS_DIR = "dossiers"
+from models import AuditLog, Dossier, User, db
+from modules.nmap import get_nmap_summary, get_open_ports, run_nmap_scan
+from modules.osint import (
+    check_breach_data,
+    get_osint_summary,
+    search_emails,
+    search_github_info,
+    search_social_media,
+)
+from modules.whois import get_whois_summary, run_whois
 
-os.makedirs(DOSSIERS_DIR, exist_ok=True)
-
-
-@app.route("/")
-def index():
-    dossiers = [
-        d
-        for d in os.listdir(DOSSIERS_DIR)
-        if os.path.isdir(os.path.join(DOSSIERS_DIR, d))
-    ]
-    return render_template("index.html", dossiers=dossiers)
+login_manager = LoginManager()
 
 
-@app.route("/dossier/new", methods=["GET", "POST"])
-def new_dossier():
-    if request.method == "POST":
-        name = request.form["name"]
-        target_dir = os.path.join(DOSSIERS_DIR, name)
-        os.makedirs(target_dir, exist_ok=True)
-        overview_path = os.path.join(target_dir, "overview.json")
-        overview = {
-            "name": name,
-            "alias": request.form.get("alias", ""),
-            "organization": request.form.get("organization", ""),
-            "ip_addresses": [],
-            "domains": [],
-            "emails": [],
-            "social_media": [],
-        }
-        with open(overview_path, "w") as f:
-            json.dump(overview, f, indent=2)
-        return redirect(url_for("dossier_overview", name=name))
-    return render_template("new_dossier.html")
+def _normalize_db_uri(uri):
+    # Heroku/older providers hand out postgres:// which SQLAlchemy no longer
+    # accepts; normalize to postgresql://.
+    if uri.startswith("postgres://"):
+        return uri.replace("postgres://", "postgresql://", 1)
+    return uri
 
 
-@app.route("/dossier/<name>")
-def dossier_overview(name):
-    target_dir = os.path.join(DOSSIERS_DIR, name)
-    overview_path = os.path.join(target_dir, "overview.json")
-    if not os.path.exists(overview_path):
-        return "Dossier not found", 404
-    with open(overview_path) as f:
-        overview = json.load(f)
+def create_app(config=None):
+    app = Flask(__name__, instance_relative_config=True)
+    os.makedirs(app.instance_path, exist_ok=True)
 
-    # Get WHOIS summary if available
-    whois_summary = get_whois_summary(target_dir)
-
-    # Get nmap summary if available
-    nmap_summary = get_nmap_summary(target_dir)
-    open_ports = get_open_ports(target_dir)
-
-    # Get OSINT summary if available
-    osint_summary = get_osint_summary(target_dir)
-
-    return render_template(
-        "dossier_overview.html",
-        overview=overview,
-        name=name,
-        whois_summary=whois_summary,
-        nmap_summary=nmap_summary,
-        open_ports=open_ports,
-        osint_summary=osint_summary,
+    default_db = "sqlite:///" + os.path.join(app.instance_path, "dossierforge.db")
+    app.config.update(
+        SECRET_KEY=os.environ.get("SECRET_KEY", "dev-key-change-in-prod"),
+        SQLALCHEMY_DATABASE_URI=_normalize_db_uri(
+            os.environ.get("DATABASE_URL", default_db)
+        ),
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        DOSSIER_DATA_DIR=os.environ.get(
+            "DOSSIER_DATA_DIR", os.path.join(app.instance_path, "dossier_data")
+        ),
     )
+    if config:
+        app.config.update(config)
+
+    os.makedirs(app.config["DOSSIER_DATA_DIR"], exist_ok=True)
+
+    db.init_app(app)
+    login_manager.init_app(app)
+    login_manager.login_view = "login"
+    login_manager.login_message_category = "error"
+
+    with app.app_context():
+        db.create_all()
+
+    register_routes(app)
+    return app
 
 
-@app.route("/dossier/<name>/whois", methods=["POST"])
-def run_whois_query(name):
-    target_dir = os.path.join(DOSSIERS_DIR, name)
-    domain = request.form.get("domain")
-
-    if not domain:
-        flash("Domain is required", "error")
-        return redirect(url_for("dossier_overview", name=name))
-
-    try:
-        result = run_whois(domain, target_dir)
-
-        if "error" in result:
-            flash(f"WHOIS query failed: {result['error']}", "error")
-        else:
-            flash(f"WHOIS query completed for {domain}", "success")
-
-            # Update overview with domain info
-            overview_path = os.path.join(target_dir, "overview.json")
-            with open(overview_path) as f:
-                overview = json.load(f)
-
-            if domain not in overview["domains"]:
-                overview["domains"].append(domain)
-
-            with open(overview_path, "w") as f:
-                json.dump(overview, f, indent=2)
-
-    except Exception as e:
-        flash(f"WHOIS query failed: {str(e)}", "error")
-
-    return redirect(url_for("dossier_overview", name=name))
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
 
 
-@app.route("/dossier/<name>/nmap", methods=["POST"])
-def run_nmap_scan_route(name):
-    target_dir = os.path.join(DOSSIERS_DIR, name)
-    target = request.form.get("target")
-    scan_type = request.form.get("scan_type", "basic")
+def _dossier_data_dir(dossier_id):
+    from flask import current_app
 
-    if not target:
-        flash("Target is required", "error")
-        return redirect(url_for("dossier_overview", name=name))
+    path = os.path.join(current_app.config["DOSSIER_DATA_DIR"], str(dossier_id))
+    os.makedirs(path, exist_ok=True)
+    return path
 
-    try:
-        result = run_nmap_scan(target, target_dir, scan_type)
 
-        if "error" in result:
-            flash(f"Nmap scan failed: {result['error']}", "error")
-        else:
-            flash(f"Nmap {scan_type} scan completed for {target}", "success")
+def _empty_lists():
+    return {"ip_addresses": [], "domains": [], "emails": [], "social_media": []}
 
-            # Update overview with target info
-            overview_path = os.path.join(target_dir, "overview.json")
-            with open(overview_path) as f:
-                overview = json.load(f)
 
-            # Add target to IP addresses if it's an IP
-            if target.replace(".", "").replace(":", "").isdigit() or ":" in target:
-                if target not in overview["ip_addresses"]:
-                    overview["ip_addresses"].append(target)
+def _load_lists(target_dir):
+    """Aggregated lists (domains/emails/ips/social) live in overview.json."""
+    path = os.path.join(target_dir, "overview.json")
+    if not os.path.exists(path):
+        return _empty_lists()
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save_lists(target_dir, data):
+    with open(os.path.join(target_dir, "overview.json"), "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _get_owned_dossier(dossier_id):
+    dossier = db.session.get(Dossier, dossier_id)
+    if dossier is None or dossier.owner_id != current_user.id:
+        abort(404)
+    return dossier
+
+
+def _audit(action, dossier_id=None, detail=""):
+    db.session.add(
+        AuditLog(
+            user_id=current_user.id,
+            dossier_id=dossier_id,
+            action=action,
+            detail=detail[:512],
+        )
+    )
+    db.session.commit()
+
+
+def register_routes(app):
+    # ---------------------------------------------------------------- auth
+    @app.route("/register", methods=["GET", "POST"])
+    def register():
+        if current_user.is_authenticated:
+            return redirect(url_for("index"))
+        if request.method == "POST":
+            email = (request.form.get("email") or "").strip().lower()
+            password = request.form.get("password") or ""
+            if not email or not password:
+                flash("Email and password are required", "error")
+                return render_template("register.html")
+            if len(password) < 8:
+                flash("Password must be at least 8 characters", "error")
+                return render_template("register.html")
+            if db.session.query(User).filter_by(email=email).first():
+                flash("An account with that email already exists", "error")
+                return render_template("register.html")
+            user = User(email=email)
+            user.set_password(password)
+            db.session.add(user)
+            db.session.commit()
+            login_user(user)
+            _audit("register", detail=email)
+            flash("Account created. Welcome to DossierForge.", "success")
+            return redirect(url_for("index"))
+        return render_template("register.html")
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if current_user.is_authenticated:
+            return redirect(url_for("index"))
+        if request.method == "POST":
+            email = (request.form.get("email") or "").strip().lower()
+            password = request.form.get("password") or ""
+            user = db.session.query(User).filter_by(email=email).first()
+            if user is None or not user.check_password(password):
+                flash("Invalid email or password", "error")
+                return render_template("login.html")
+            login_user(user)
+            _audit("login", detail=email)
+            return redirect(url_for("index"))
+        return render_template("login.html")
+
+    @app.route("/logout", methods=["POST"])
+    @login_required
+    def logout():
+        logout_user()
+        flash("Signed out", "success")
+        return redirect(url_for("login"))
+
+    # ----------------------------------------------------------- dossiers
+    @app.route("/")
+    @login_required
+    def index():
+        dossiers = (
+            db.session.query(Dossier)
+            .filter_by(owner_id=current_user.id)
+            .order_by(Dossier.created_at.desc())
+            .all()
+        )
+        return render_template("index.html", dossiers=dossiers)
+
+    @app.route("/dossier/new", methods=["GET", "POST"])
+    @login_required
+    def new_dossier():
+        if request.method == "POST":
+            name = (request.form.get("name") or "").strip()
+            if not name:
+                flash("Name is required", "error")
+                return render_template("new_dossier.html")
+            if not request.form.get("authorized"):
+                flash(
+                    "You must confirm you are authorized to investigate this "
+                    "target before creating a dossier.",
+                    "error",
+                )
+                return render_template("new_dossier.html")
+            dossier = Dossier(
+                owner_id=current_user.id,
+                name=name,
+                alias=(request.form.get("alias") or "").strip(),
+                organization=(request.form.get("organization") or "").strip(),
+                authorization_scope=(
+                    request.form.get("authorization_scope") or ""
+                ).strip(),
+            )
+            db.session.add(dossier)
+            db.session.commit()
+            _save_lists(_dossier_data_dir(dossier.id), _empty_lists())
+            _audit("create_dossier", dossier_id=dossier.id, detail=name)
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return render_template("new_dossier.html")
+
+    @app.route("/dossier/<int:dossier_id>")
+    @login_required
+    def dossier_overview(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        lists = _load_lists(target_dir)
+        overview = {
+            "name": dossier.name,
+            "alias": dossier.alias,
+            "organization": dossier.organization,
+            "ip_addresses": lists.get("ip_addresses", []),
+            "domains": lists.get("domains", []),
+            "emails": lists.get("emails", []),
+            "social_media": lists.get("social_media", []),
+        }
+        return render_template(
+            "dossier_overview.html",
+            dossier=dossier,
+            overview=overview,
+            whois_summary=get_whois_summary(target_dir),
+            nmap_summary=get_nmap_summary(target_dir),
+            open_ports=get_open_ports(target_dir),
+            osint_summary=get_osint_summary(target_dir),
+            audit_logs=dossier.audit_logs,
+        )
+
+    # ------------------------------------------------------------- modules
+    @app.route("/dossier/<int:dossier_id>/whois", methods=["POST"])
+    @login_required
+    def run_whois_query(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        domain = request.form.get("domain")
+        if not domain:
+            flash("Domain is required", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        try:
+            result = run_whois(domain, target_dir)
+            if "error" in result:
+                flash(f"WHOIS query failed: {result['error']}", "error")
             else:
-                # It's a hostname, add to domains
-                if target not in overview["domains"]:
-                    overview["domains"].append(target)
+                flash(f"WHOIS query completed for {domain}", "success")
+                lists = _load_lists(target_dir)
+                if domain not in lists["domains"]:
+                    lists["domains"].append(domain)
+                _save_lists(target_dir, lists)
+            _audit("run_whois", dossier_id=dossier.id, detail=domain)
+        except Exception as e:
+            flash(f"WHOIS query failed: {str(e)}", "error")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
-            with open(overview_path, "w") as f:
-                json.dump(overview, f, indent=2)
+    @app.route("/dossier/<int:dossier_id>/nmap", methods=["POST"])
+    @login_required
+    def run_nmap_scan_route(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        target = request.form.get("target")
+        scan_type = request.form.get("scan_type", "basic")
+        if not target:
+            flash("Target is required", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        try:
+            result = run_nmap_scan(target, target_dir, scan_type)
+            if "error" in result:
+                flash(f"Nmap scan failed: {result['error']}", "error")
+            else:
+                flash(f"Nmap {scan_type} scan completed for {target}", "success")
+                lists = _load_lists(target_dir)
+                if target.replace(".", "").replace(":", "").isdigit() or ":" in target:
+                    if target not in lists["ip_addresses"]:
+                        lists["ip_addresses"].append(target)
+                elif target not in lists["domains"]:
+                    lists["domains"].append(target)
+                _save_lists(target_dir, lists)
+            _audit("run_nmap", dossier_id=dossier.id, detail=f"{scan_type}:{target}")
+        except Exception as e:
+            flash(f"Nmap scan failed: {str(e)}", "error")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
-    except Exception as e:
-        flash(f"Nmap scan failed: {str(e)}", "error")
+    @app.route("/dossier/<int:dossier_id>/osint/social", methods=["POST"])
+    @login_required
+    def run_social_media_search(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        target = request.form.get("target")
+        if not target:
+            flash("Target is required", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        try:
+            search_social_media(target, target_dir)
+            flash(f"Social media search completed for {target}", "success")
+            _audit("run_social", dossier_id=dossier.id, detail=target)
+        except Exception as e:
+            flash(f"Social media search failed: {str(e)}", "error")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
-    return redirect(url_for("dossier_overview", name=name))
+    @app.route("/dossier/<int:dossier_id>/osint/emails", methods=["POST"])
+    @login_required
+    def run_email_search(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        domain = request.form.get("domain")
+        if not domain:
+            flash("Domain is required", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        try:
+            result = search_emails(domain, target_dir)
+            flash(f"Email search completed for {domain}", "success")
+            lists = _load_lists(target_dir)
+            for email in result.get("emails", []):
+                if email not in lists["emails"]:
+                    lists["emails"].append(email)
+            _save_lists(target_dir, lists)
+            _audit("run_emails", dossier_id=dossier.id, detail=domain)
+        except Exception as e:
+            flash(f"Email search failed: {str(e)}", "error")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    @app.route("/dossier/<int:dossier_id>/osint/breach", methods=["POST"])
+    @login_required
+    def run_breach_check(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        email = request.form.get("email")
+        if not email:
+            flash("Email is required", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        try:
+            check_breach_data(email, target_dir)
+            flash(f"Breach check completed for {email}", "success")
+            _audit("run_breach", dossier_id=dossier.id, detail=email)
+        except Exception as e:
+            flash(f"Breach check failed: {str(e)}", "error")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    @app.route("/dossier/<int:dossier_id>/osint/github", methods=["POST"])
+    @login_required
+    def run_github_search(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        username = request.form.get("username")
+        if not username:
+            flash("Username is required", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        try:
+            search_github_info(username, target_dir)
+            flash(f"GitHub search completed for {username}", "success")
+            _audit("run_github", dossier_id=dossier.id, detail=username)
+        except Exception as e:
+            flash(f"GitHub search failed: {str(e)}", "error")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
 
-@app.route("/dossier/<name>/osint/social", methods=["POST"])
-def run_social_media_search(name):
-    target_dir = os.path.join(DOSSIERS_DIR, name)
-    target = request.form.get("target")
-
-    if not target:
-        flash("Target is required", "error")
-        return redirect(url_for("dossier_overview", name=name))
-
-    try:
-        search_social_media(target, target_dir)
-        flash(f"Social media search completed for {target}", "success")
-
-    except Exception as e:
-        flash(f"Social media search failed: {str(e)}", "error")
-
-    return redirect(url_for("dossier_overview", name=name))
-
-
-@app.route("/dossier/<name>/osint/emails", methods=["POST"])
-def run_email_search(name):
-    target_dir = os.path.join(DOSSIERS_DIR, name)
-    domain = request.form.get("domain")
-
-    if not domain:
-        flash("Domain is required", "error")
-        return redirect(url_for("dossier_overview", name=name))
-
-    try:
-        result = search_emails(domain, target_dir)
-        flash(f"Email search completed for {domain}", "success")
-
-        # Update overview with found emails
-        overview_path = os.path.join(target_dir, "overview.json")
-        with open(overview_path) as f:
-            overview = json.load(f)
-
-        for email in result.get("emails", []):
-            if email not in overview["emails"]:
-                overview["emails"].append(email)
-
-        with open(overview_path, "w") as f:
-            json.dump(overview, f, indent=2)
-
-    except Exception as e:
-        flash(f"Email search failed: {str(e)}", "error")
-
-    return redirect(url_for("dossier_overview", name=name))
-
-
-@app.route("/dossier/<name>/osint/breach", methods=["POST"])
-def run_breach_check(name):
-    target_dir = os.path.join(DOSSIERS_DIR, name)
-    email = request.form.get("email")
-
-    if not email:
-        flash("Email is required", "error")
-        return redirect(url_for("dossier_overview", name=name))
-
-    try:
-        check_breach_data(email, target_dir)
-        flash(f"Breach check completed for {email}", "success")
-
-    except Exception as e:
-        flash(f"Breach check failed: {str(e)}", "error")
-
-    return redirect(url_for("dossier_overview", name=name))
-
-
-@app.route("/dossier/<name>/osint/github", methods=["POST"])
-def run_github_search(name):
-    target_dir = os.path.join(DOSSIERS_DIR, name)
-    username = request.form.get("username")
-
-    if not username:
-        flash("Username is required", "error")
-        return redirect(url_for("dossier_overview", name=name))
-
-    try:
-        search_github_info(username, target_dir)
-        flash(f"GitHub search completed for {username}", "success")
-
-    except Exception as e:
-        flash(f"GitHub search failed: {str(e)}", "error")
-
-    return redirect(url_for("dossier_overview", name=name))
+app = create_app()
 
 
 if __name__ == "__main__":

@@ -1,95 +1,96 @@
-"""
-ROUTE TESTS — test Flask endpoints return correct responses.
+"""Route tests for DossierForge.
 
-WHY: Route tests verify your app handles requests correctly.
-We mock external calls (WHOIS, nmap, OSINT) so tests are fast
-and don't depend on external services or tools being available.
-
-PATTERN: "mock external dependency" — replace real network calls
-with fake responses so tests are reliable and fast.
+Covers auth gating, the authorized-use attestation gate, per-user data
+isolation, and audit logging. External recon calls are exercised through the
+offline breach-check module so no network or system binaries are required.
 """
 
-from unittest.mock import patch
+from conftest import register
+
+from models import AuditLog, Dossier, User, db
 
 
-def test_index_returns_200(client):
-    """
-    SMOKE TEST — does the main page load?
-
-    ARRANGE: nothing (client fixture handles setup)
-    ACT: GET /
-    ASSERT: 200 status
-    """
+def test_index_requires_login(client):
     response = client.get("/")
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_register_creates_user_and_logs_in(client, app):
+    response = register(client)
     assert response.status_code == 200
+    with app.app_context():
+        assert db.session.query(User).filter_by(email="user@example.com").first()
 
 
-def test_new_dossier_get_returns_200(client):
-    """
-    Does the new dossier form render?
-    """
-    response = client.get("/dossier/new")
-    assert response.status_code == 200
-
-
-def test_new_dossier_post_creates_dossier(client, tmp_path):
-    """
-    INTEGRATION TEST — does creating a dossier work end-to-end?
-
-    ARRANGE: form data with a dossier name
-    ACT: POST to /dossier/new
-    ASSERT: redirects (302) and dossier directory + overview.json exist
-    """
-    response = client.post(
+def test_new_dossier_requires_attestation(client, app):
+    register(client)
+    # Without the authorized checkbox the dossier must NOT be created.
+    resp = client.post(
         "/dossier/new",
-        data={"name": "test-target", "alias": "TT", "organization": "TestCorp"},
+        data={"name": "acme", "alias": "a", "organization": "Acme"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    with app.app_context():
+        assert db.session.query(Dossier).count() == 0
+
+    # With attestation it is created and redirects to the overview.
+    resp = client.post(
+        "/dossier/new",
+        data={"name": "acme", "authorized": "yes", "authorization_scope": "SOW-1"},
         follow_redirects=False,
     )
-    # Should redirect to the dossier overview
-    assert response.status_code == 302
-
-    # Verify the dossier was created on disk
-    import json
-
-    overview_path = tmp_path / "test-target" / "overview.json"
-    assert overview_path.exists()
-    overview = json.loads(overview_path.read_text())
-    assert overview["name"] == "test-target"
-    assert overview["alias"] == "TT"
-    assert overview["organization"] == "TestCorp"
+    assert resp.status_code == 302
+    with app.app_context():
+        dossier = db.session.query(Dossier).one()
+        assert dossier.name == "acme"
+        assert dossier.authorization_scope == "SOW-1"
 
 
-@patch("app.get_whois_summary", return_value=None)
-@patch("app.get_nmap_summary", return_value=None)
-@patch("app.get_open_ports", return_value=[])
-@patch("app.get_osint_summary", return_value=None)
-def test_dossier_overview_returns_200(
-    mock_osint, mock_ports, mock_nmap, mock_whois, client, tmp_path
-):
-    """
-    Does the dossier overview page load for an existing dossier?
+def test_dossiers_are_isolated_per_user(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    owner.post("/dossier/new", data={"name": "secret", "authorized": "yes"})
+    with app.app_context():
+        dossier_id = db.session.query(Dossier).one().id
 
-    WHY: This route reads from disk and calls summary functions.
-    We mock all summary functions to avoid needing real scan data.
-    """
-    import json
-
-    # ARRANGE: create a dossier on disk
-    dossier_dir = tmp_path / "test-target"
-    dossier_dir.mkdir()
-    overview = {"name": "test-target", "alias": "", "organization": ""}
-    (dossier_dir / "overview.json").write_text(json.dumps(overview))
-
-    # ACT
-    response = client.get("/dossier/test-target")
-
-    # ASSERT
-    assert response.status_code == 200
+    # A different user must not be able to view it.
+    intruder = app.test_client()
+    register(intruder, email="intruder@example.com")
+    resp = intruder.get(f"/dossier/{dossier_id}")
+    assert resp.status_code == 404
 
 
-def test_dossier_overview_returns_404_for_missing(client):
-    """
-    Does the app return 404 for a nonexistent dossier?
-    """
-    response = client.get("/dossier/nonexistent")
-    assert response.status_code == 404
+def test_run_breach_module_records_audit(client, app):
+    register(client)
+    client.post("/dossier/new", data={"name": "acme", "authorized": "yes"})
+    with app.app_context():
+        dossier_id = db.session.query(Dossier).one().id
+
+    resp = client.post(
+        f"/dossier/{dossier_id}/osint/breach",
+        data={"email": "demo@example.com"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Breach check completed" in resp.data
+    with app.app_context():
+        logs = db.session.query(AuditLog).filter_by(action="run_breach").all()
+        assert len(logs) == 1
+        assert logs[0].detail == "demo@example.com"
+
+
+def test_overview_returns_200_for_owner(client, app):
+    register(client)
+    client.post("/dossier/new", data={"name": "acme", "authorized": "yes"})
+    with app.app_context():
+        dossier_id = db.session.query(Dossier).one().id
+    resp = client.get(f"/dossier/{dossier_id}")
+    assert resp.status_code == 200
+    assert b"acme" in resp.data
+
+
+def test_overview_404_for_missing(client):
+    register(client)
+    assert client.get("/dossier/999999").status_code == 404

@@ -1,31 +1,21 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Dossier Overview - {{ name }}</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-</head>
-<body class="container py-4">
-    <h1>Dossier Overview: {{ overview.name }}</h1>
-    
-    <!-- Flash Messages -->
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            {% for category, message in messages %}
-                <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
-                    {{ message }}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
-            {% endfor %}
-        {% endif %}
-    {% endwith %}
-    
+{% extends "base.html" %}
+{% block title %}{{ overview.name }} - DossierForge{% endblock %}
+{% block content %}
+    <div class="d-flex justify-content-between align-items-start mb-3">
+        <h1 class="h3 mb-0">Dossier: {{ overview.name }}</h1>
+        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm">Back to dossiers</a>
+    </div>
+
+    <div class="alert alert-secondary py-2">
+        <strong>Authorized use:</strong>
+        attested {{ dossier.attested_at.strftime('%Y-%m-%d %H:%M UTC') }}
+        {% if dossier.authorization_scope %} &middot; scope: {{ dossier.authorization_scope }}{% endif %}
+    </div>
+
     <div class="row">
         <div class="col-md-6">
             <div class="card mb-3">
-                <div class="card-header">
-                    <h5>Basic Information</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">Basic Information</h5></div>
                 <div class="card-body">
                     <ul class="list-group list-group-flush">
                         <li class="list-group-item"><strong>Alias:</strong> {{ overview.alias or 'N/A' }}</li>
@@ -37,13 +27,29 @@
                     </ul>
                 </div>
             </div>
+
+            <div class="card mb-3">
+                <div class="card-header"><h5 class="mb-0">Audit Trail</h5></div>
+                <div class="card-body">
+                    {% if audit_logs %}
+                        <ul class="list-group list-group-flush">
+                            {% for log in audit_logs %}
+                            <li class="list-group-item d-flex justify-content-between">
+                                <span><code>{{ log.action }}</code> {{ log.detail }}</span>
+                                <span class="text-muted small">{{ log.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="text-muted mb-0">No actions recorded yet.</p>
+                    {% endif %}
+                </div>
+            </div>
         </div>
-        
+
         <div class="col-md-6">
             <div class="card mb-3">
-                <div class="card-header">
-                    <h5>WHOIS Information</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">WHOIS Information</h5></div>
                 <div class="card-body">
                     {% if whois_summary %}
                         <ul class="list-group list-group-flush">
@@ -59,34 +65,28 @@
                     {% endif %}
                 </div>
             </div>
-            
-            <!-- WHOIS Query Form -->
+
             <div class="card mb-3">
-                <div class="card-header">
-                    <h5>Run WHOIS Query</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">Run WHOIS Query</h5></div>
                 <div class="card-body">
-                    <form method="post" action="{{ url_for('run_whois_query', name=name) }}">
+                    <form method="post" action="{{ url_for('run_whois_query', dossier_id=dossier.id) }}">
                         <div class="mb-3">
                             <label for="domain" class="form-label">Domain</label>
-                            <input type="text" class="form-control" id="domain" name="domain" 
+                            <input type="text" class="form-control" id="domain" name="domain"
                                    placeholder="example.com" required>
                         </div>
                         <button type="submit" class="btn btn-primary">Run WHOIS</button>
                     </form>
                 </div>
             </div>
-            
-            <!-- Nmap Scan Form -->
+
             <div class="card mb-3">
-                <div class="card-header">
-                    <h5>Run Nmap Scan</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">Run Nmap Scan</h5></div>
                 <div class="card-body">
-                    <form method="post" action="{{ url_for('run_nmap_scan_route', name=name) }}">
+                    <form method="post" action="{{ url_for('run_nmap_scan_route', dossier_id=dossier.id) }}">
                         <div class="mb-3">
                             <label for="target" class="form-label">Target</label>
-                            <input type="text" class="form-control" id="target" name="target" 
+                            <input type="text" class="form-control" id="target" name="target"
                                    placeholder="192.168.1.1 or example.com" required>
                         </div>
                         <div class="mb-3">
@@ -101,28 +101,25 @@
                     </form>
                 </div>
             </div>
-            
-            <!-- OSINT Tools -->
+
             <div class="card">
-                <div class="card-header">
-                    <h5>OSINT Tools</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">OSINT Tools</h5></div>
                 <div class="card-body">
                     <div class="row">
                         <div class="col-md-6">
                             <h6>Social Media Search</h6>
-                            <form method="post" action="{{ url_for('run_social_media_search', name=name) }}" class="mb-3">
+                            <form method="post" action="{{ url_for('run_social_media_search', dossier_id=dossier.id) }}" class="mb-3">
                                 <div class="mb-2">
-                                    <input type="text" class="form-control form-control-sm" name="target" 
+                                    <input type="text" class="form-control form-control-sm" name="target"
                                            placeholder="username or name" required>
                                 </div>
                                 <button type="submit" class="btn btn-info btn-sm">Search Social Media</button>
                             </form>
-                            
+
                             <h6>Email Discovery</h6>
-                            <form method="post" action="{{ url_for('run_email_search', name=name) }}" class="mb-3">
+                            <form method="post" action="{{ url_for('run_email_search', dossier_id=dossier.id) }}" class="mb-3">
                                 <div class="mb-2">
-                                    <input type="text" class="form-control form-control-sm" name="domain" 
+                                    <input type="text" class="form-control form-control-sm" name="domain"
                                            placeholder="example.com" required>
                                 </div>
                                 <button type="submit" class="btn btn-info btn-sm">Find Emails</button>
@@ -130,18 +127,18 @@
                         </div>
                         <div class="col-md-6">
                             <h6>Breach Check</h6>
-                            <form method="post" action="{{ url_for('run_breach_check', name=name) }}" class="mb-3">
+                            <form method="post" action="{{ url_for('run_breach_check', dossier_id=dossier.id) }}" class="mb-3">
                                 <div class="mb-2">
-                                    <input type="email" class="form-control form-control-sm" name="email" 
+                                    <input type="email" class="form-control form-control-sm" name="email"
                                            placeholder="email@example.com" required>
                                 </div>
                                 <button type="submit" class="btn btn-danger btn-sm">Check Breaches</button>
                             </form>
-                            
+
                             <h6>GitHub Search</h6>
-                            <form method="post" action="{{ url_for('run_github_search', name=name) }}" class="mb-3">
+                            <form method="post" action="{{ url_for('run_github_search', dossier_id=dossier.id) }}" class="mb-3">
                                 <div class="mb-2">
-                                    <input type="text" class="form-control form-control-sm" name="username" 
+                                    <input type="text" class="form-control form-control-sm" name="username"
                                            placeholder="github_username" required>
                                 </div>
                                 <button type="submit" class="btn btn-dark btn-sm">Search GitHub</button>
@@ -152,15 +149,12 @@
             </div>
         </div>
     </div>
-    
-    <!-- Nmap Results Section -->
+
     {% if nmap_summary and nmap_summary.scans %}
     <div class="row mt-4">
         <div class="col-12">
             <div class="card">
-                <div class="card-header">
-                    <h5>Nmap Scan Results</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">Nmap Scan Results</h5></div>
                 <div class="card-body">
                     <div class="row">
                         <div class="col-md-6">
@@ -176,26 +170,22 @@
                             <ul class="list-group list-group-flush">
                                 {% for scan in nmap_summary.scans %}
                                 <li class="list-group-item">
-                                    <strong>{{ scan.type|title }} Scan:</strong> {{ scan.target }} 
+                                    <strong>{{ scan.type|title }} Scan:</strong> {{ scan.target }}
                                     ({{ scan.open_ports }} open ports)
                                 </li>
                                 {% endfor %}
                             </ul>
                         </div>
                     </div>
-                    
+
                     {% if open_ports %}
                     <div class="mt-3">
-                        <h6>Open Ports & Services</h6>
+                        <h6>Open Ports &amp; Services</h6>
                         <div class="table-responsive">
                             <table class="table table-sm table-striped">
                                 <thead>
                                     <tr>
-                                        <th>Port</th>
-                                        <th>Protocol</th>
-                                        <th>Service</th>
-                                        <th>Product</th>
-                                        <th>Version</th>
+                                        <th>Port</th><th>Protocol</th><th>Service</th><th>Product</th><th>Version</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -218,17 +208,13 @@
         </div>
     </div>
     {% endif %}
-    
-    <!-- OSINT Results Section -->
+
     {% if osint_summary %}
     <div class="row mt-4">
         <div class="col-12">
             <div class="card">
-                <div class="card-header">
-                    <h5>OSINT Results</h5>
-                </div>
+                <div class="card-header"><h5 class="mb-0">OSINT Results</h5></div>
                 <div class="card-body">
-                    <!-- Social Media Results -->
                     {% if osint_summary.social_media and osint_summary.social_media.profiles %}
                     <div class="mb-4">
                         <h6>Social Media Profiles</h6>
@@ -253,8 +239,7 @@
                         </div>
                     </div>
                     {% endif %}
-                    
-                    <!-- Email Results -->
+
                     {% if osint_summary.emails %}
                     <div class="mb-4">
                         <h6>Discovered Emails</h6>
@@ -265,8 +250,7 @@
                         </ul>
                     </div>
                     {% endif %}
-                    
-                    <!-- Breach Results -->
+
                     {% if osint_summary.breaches %}
                     <div class="mb-4">
                         <h6>Data Breach Results</h6>
@@ -282,8 +266,7 @@
                         {% endfor %}
                     </div>
                     {% endif %}
-                    
-                    <!-- GitHub Results -->
+
                     {% if osint_summary.github_profiles %}
                     <div class="mb-4">
                         <h6>GitHub Profiles</h6>
@@ -291,15 +274,9 @@
                         <div class="card mb-2">
                             <div class="card-body">
                                 <h6>{{ profile.username }}</h6>
-                                {% if profile.profile.name %}
-                                <p><strong>Name:</strong> {{ profile.profile.name }}</p>
-                                {% endif %}
-                                {% if profile.profile.bio %}
-                                <p><strong>Bio:</strong> {{ profile.profile.bio }}</p>
-                                {% endif %}
-                                {% if profile.profile.public_repos %}
-                                <p><strong>Public Repos:</strong> {{ profile.profile.public_repos }}</p>
-                                {% endif %}
+                                {% if profile.profile.name %}<p><strong>Name:</strong> {{ profile.profile.name }}</p>{% endif %}
+                                {% if profile.profile.bio %}<p><strong>Bio:</strong> {{ profile.profile.bio }}</p>{% endif %}
+                                {% if profile.profile.public_repos %}<p><strong>Public Repos:</strong> {{ profile.profile.public_repos }}</p>{% endif %}
                             </div>
                         </div>
                         {% endfor %}
@@ -310,7 +287,4 @@
         </div>
     </div>
     {% endif %}
-    
-    <a href="/" class="btn btn-secondary mt-3">Back to Dossiers</a>
-</body>
-</html> 
+{% endblock %}

@@ -1,4 +1,7 @@
 Flask
+Flask-SQLAlchemy
+Flask-Login
 python-whois
 lxml
-requests 
+requests
+gunicorn 

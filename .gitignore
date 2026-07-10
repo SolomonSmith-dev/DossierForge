@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.pyo
 dossiers/
+instance/
 *.db
 .env
 .DS_Store
