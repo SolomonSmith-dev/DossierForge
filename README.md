@@ -13,6 +13,7 @@ Security researchers and pentesters spend the first hour of any engagement runni
 ## Features
 
 - Multi-user accounts: register, sign in, and keep dossiers isolated per user
+- Collaboration: share a dossier with teammates as viewer (read-only) or editor (can run recon)
 - Authorized-use attestation: creating a dossier requires confirming authorization; the attestation and scope are recorded
 - Audit trail: every dossier action and recon run is logged per dossier
 - WHOIS lookup: domain registration data, registrar, nameservers, expiry
@@ -117,8 +118,9 @@ gunicorn "app:create_app()" --bind 0.0.0.0:5001
 - [x] Multi-user accounts with per-user isolation
 - [x] Markdown/JSON export of dossiers
 - [x] Postgres-ready backend (`DATABASE_URL`)
+- [x] Dossier sharing with viewer/editor roles
 - [ ] Background job queue for long-running scans
-- [ ] Team accounts / shared dossiers
+- [ ] Organizations / team-wide dossiers
 - [ ] Database migrations (Alembic)
 
 ## License

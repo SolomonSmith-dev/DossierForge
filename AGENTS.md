@@ -22,6 +22,14 @@ Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk un
 - Product guardrail: creating a dossier requires an authorized-use attestation
   (`authorized` checkbox) and every recon action is written to `AuditLog`. Keep these
   when adding new recon routes.
+- Access control: use `_get_dossier_access(dossier_id, need=...)` in `app.py` for all
+  dossier routes. `need` is `"view"` (owner or any collaborator), `"edit"` (owner or
+  editor collaborator; recon/module routes), or `"owner"` (owner-only; delete/share).
+  It returns `(dossier, role)`; no-access is 404 and insufficient-role is 403.
+  Sharing is modeled by `DossierShare` (viewer/editor).
+- `db.create_all()` on startup adds *new* tables (e.g. `dossier_shares`) but never
+  alters existing ones. Adding a column to an existing model requires deleting the dev
+  DB (`instance/dossierforge.db`) or introducing migrations.
 
 ### Environment
 - Dependencies are installed into a virtualenv at `.venv/` (the update script creates
