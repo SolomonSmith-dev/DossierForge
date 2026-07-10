@@ -18,7 +18,8 @@ Security researchers and pentesters spend the first hour of any engagement runni
 - WHOIS lookup: domain registration data, registrar, nameservers, expiry
 - nmap scanning: port scan with service detection and open-port summary
 - OSINT modules: social media search, email enumeration, breach check, GitHub info
-- Dossier management: create, organize, and browse target profiles via web UI
+- Dossier management: create, browse, export, and delete target profiles via web UI
+- Reporting: export a dossier as a Markdown report or raw JSON
 
 ## Stack
 
@@ -113,9 +114,12 @@ gunicorn "app:create_app()" --bind 0.0.0.0:5001
 
 ## Roadmap
 
+- [x] Multi-user accounts with per-user isolation
+- [x] Markdown/JSON export of dossiers
+- [x] Postgres-ready backend (`DATABASE_URL`)
 - [ ] Background job queue for long-running scans
-- [ ] CSV/Markdown export of dossiers
-- [ ] Optional Postgres backend for multi-user setups
+- [ ] Team accounts / shared dossiers
+- [ ] Database migrations (Alembic)
 
 ## License
 
