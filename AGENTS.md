@@ -27,9 +27,13 @@ Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk un
   editor collaborator; recon/module routes), or `"owner"` (owner-only; delete/share).
   It returns `(dossier, role)`; no-access is 404 and insufficient-role is 403.
   Sharing is modeled by `DossierShare` (viewer/editor).
-- `db.create_all()` on startup adds *new* tables (e.g. `dossier_shares`) but never
-  alters existing ones. Adding a column to an existing model requires deleting the dev
-  DB (`instance/dossierforge.db`) or introducing migrations.
+- `db.create_all()` on startup adds *new* tables (e.g. `dossier_shares`, `notes`,
+  `tags`) but never alters existing ones. Adding a column to an existing model requires
+  deleting the dev DB (`instance/dossierforge.db`) or introducing migrations. Because
+  of this, new model features are modeled as new tables where practical.
+- Dossier report export (`modules/export.py`) is a pure renderer; the report dict is
+  assembled in `app.py:_build_report` from DB metadata (incl. notes/tags) plus on-disk
+  recon summaries. Add new sections in both places.
 
 ### Environment
 - Dependencies are installed into a virtualenv at `.venv/` (the update script creates
