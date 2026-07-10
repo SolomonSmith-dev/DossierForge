@@ -7,7 +7,7 @@ offline breach-check module so no network or system binaries are required.
 
 from conftest import register
 
-from models import AuditLog, Dossier, DossierShare, User, db
+from models import AuditLog, Dossier, DossierShare, Note, Tag, User, db
 
 
 def test_index_requires_login(client):
@@ -250,3 +250,50 @@ def test_shared_dossier_appears_on_dashboard(app):
     assert resp.status_code == 200
     assert b"Shared with you" in resp.data
     assert b"Shared Case" in resp.data
+
+
+def test_add_note_and_edit_access(app):
+    owner, viewer, dossier_id = _two_users(app)
+    owner.post(f"/dossier/{dossier_id}/notes", data={"body": "Found exposed admin"})
+    with app.app_context():
+        note = db.session.query(Note).one()
+        assert note.body == "Found exposed admin"
+        assert db.session.query(AuditLog).filter_by(action="add_note").count() == 1
+
+    # Viewer (read-only) cannot add notes.
+    owner.post(
+        f"/dossier/{dossier_id}/share",
+        data={"email": "teammate@example.com", "role": "viewer"},
+    )
+    assert (
+        viewer.post(f"/dossier/{dossier_id}/notes", data={"body": "nope"}).status_code
+        == 403
+    )
+
+
+def test_add_tag_dedupes_and_powers_search(client, app):
+    register(client)
+    dossier_id = _make_dossier(client, app, name="Acme")
+    client.post(f"/dossier/{dossier_id}/tags", data={"name": "Phishing"})
+    client.post(f"/dossier/{dossier_id}/tags", data={"name": "phishing"})  # dup
+    with app.app_context():
+        tags = db.session.query(Tag).all()
+        assert len(tags) == 1
+        assert tags[0].name == "phishing"
+
+    # Search by tag returns the dossier; a non-matching query does not.
+    assert b"Acme" in client.get("/?q=phish").data
+    assert b"Acme" not in client.get("/?q=zzzzz").data
+
+
+def test_notes_and_tags_in_export(client, app):
+    register(client)
+    dossier_id = _make_dossier(client, app, name="Acme")
+    client.post(f"/dossier/{dossier_id}/tags", data={"name": "engagement-7"})
+    client.post(
+        f"/dossier/{dossier_id}/notes", data={"body": "Credentials leaked on pastebin"}
+    )
+    md = client.get(f"/dossier/{dossier_id}/export.md").data
+    assert b"engagement-7" in md
+    assert b"Credentials leaked on pastebin" in md
+    assert b"## Notes" in md

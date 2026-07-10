@@ -27,10 +27,23 @@ def render_markdown(report):
     lines.append(f"- **Created:** {_fmt(report.get('created_at'))}")
     lines.append("")
 
+    tags = report.get("tags") or []
+    if tags:
+        lines.append(f"- **Tags:** {', '.join(tags)}")
+        lines.append("")
+
     lines.append("## Authorized use")
     lines.append(f"- **Attested at:** {_fmt(report.get('attested_at'))}")
     lines.append(f"- **Scope / reference:** {_fmt(report.get('authorization_scope'))}")
     lines.append("")
+
+    notes = report.get("notes") or []
+    if notes:
+        lines.append("## Notes")
+        for n in notes:
+            lines.append(f"- _{n.get('at')} — {n.get('author')}_")
+            lines.append(f"  {n.get('body')}")
+        lines.append("")
 
     assets = report.get("assets") or {}
     lines.append("## Discovered assets")

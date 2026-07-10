@@ -68,6 +68,18 @@ class Dossier(db.Model):
     shares = db.relationship(
         "DossierShare", back_populates="dossier", cascade="all, delete-orphan"
     )
+    notes = db.relationship(
+        "Note",
+        back_populates="dossier",
+        cascade="all, delete-orphan",
+        order_by="Note.created_at.desc()",
+    )
+    tags = db.relationship(
+        "Tag",
+        back_populates="dossier",
+        cascade="all, delete-orphan",
+        order_by="Tag.name",
+    )
 
 
 class DossierShare(db.Model):
@@ -93,6 +105,41 @@ class DossierShare(db.Model):
 
     dossier = db.relationship("Dossier", back_populates="shares")
     user = db.relationship("User")
+
+
+class Note(db.Model):
+    """A freeform investigator note attached to a dossier."""
+
+    __tablename__ = "notes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    dossier_id = db.Column(
+        db.Integer, db.ForeignKey("dossiers.id"), nullable=False, index=True
+    )
+    author_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+
+    dossier = db.relationship("Dossier", back_populates="notes")
+    author = db.relationship("User")
+
+
+class Tag(db.Model):
+    """A label used to categorize and search dossiers."""
+
+    __tablename__ = "tags"
+    __table_args__ = (
+        db.UniqueConstraint("dossier_id", "name", name="uq_tag_dossier_name"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    dossier_id = db.Column(
+        db.Integer, db.ForeignKey("dossiers.id"), nullable=False, index=True
+    )
+    name = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+
+    dossier = db.relationship("Dossier", back_populates="tags")
 
 
 class AuditLog(db.Model):

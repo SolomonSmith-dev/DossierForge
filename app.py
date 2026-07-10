@@ -28,7 +28,7 @@ from flask_login import (
     logout_user,
 )
 
-from models import AuditLog, Dossier, DossierShare, User, db
+from models import AuditLog, Dossier, DossierShare, Note, Tag, User, db
 from modules.export import render_json, render_markdown
 from modules.nmap import get_nmap_summary, get_open_ports, run_nmap_scan
 from modules.osint import (
@@ -151,6 +151,15 @@ def _build_report(dossier, target_dir):
         "authorization_scope": dossier.authorization_scope,
         "attested_at": dossier.attested_at.isoformat(),
         "created_at": dossier.created_at.isoformat(),
+        "tags": [t.name for t in dossier.tags],
+        "notes": [
+            {
+                "author": n.author.email,
+                "body": n.body,
+                "at": n.created_at.isoformat(),
+            }
+            for n in dossier.notes
+        ],
         "assets": lists,
         "whois": get_whois_summary(target_dir),
         "nmap": get_nmap_summary(target_dir),
@@ -240,20 +249,36 @@ def register_routes(app):
     @app.route("/")
     @login_required
     def index():
-        dossiers = (
-            db.session.query(Dossier)
+        query = (request.args.get("q") or "").strip()
+
+        def matches(dossier):
+            if not query:
+                return True
+            q = query.lower()
+            haystack = [dossier.name or "", dossier.organization or ""]
+            haystack += [t.name for t in dossier.tags]
+            return any(q in value.lower() for value in haystack)
+
+        dossiers = [
+            d
+            for d in db.session.query(Dossier)
             .filter_by(owner_id=current_user.id)
             .order_by(Dossier.created_at.desc())
             .all()
-        )
-        shared = (
-            db.session.query(Dossier, DossierShare.role)
+            if matches(d)
+        ]
+        shared = [
+            (d, role)
+            for d, role in db.session.query(Dossier, DossierShare.role)
             .join(DossierShare, DossierShare.dossier_id == Dossier.id)
             .filter(DossierShare.user_id == current_user.id)
             .order_by(Dossier.created_at.desc())
             .all()
+            if matches(d)
+        ]
+        return render_template(
+            "index.html", dossiers=dossiers, shared=shared, query=query
         )
-        return render_template("index.html", dossiers=dossiers, shared=shared)
 
     @app.route("/dossier/new", methods=["GET", "POST"])
     @login_required
@@ -308,6 +333,8 @@ def register_routes(app):
             role=role,
             can_edit=role in ("owner", "editor"),
             collaborators=dossier.shares if role == "owner" else None,
+            notes=dossier.notes,
+            tags=dossier.tags,
             whois_summary=get_whois_summary(target_dir),
             nmap_summary=get_nmap_summary(target_dir),
             open_ports=get_open_ports(target_dir),
@@ -398,6 +425,74 @@ def register_routes(app):
         db.session.commit()
         _audit("unshare_dossier", dossier_id=dossier.id, detail=email)
         flash(f"Removed {email}", "success")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    # --------------------------------------------------------- notes & tags
+    @app.route("/dossier/<int:dossier_id>/notes", methods=["POST"])
+    @login_required
+    def add_note(dossier_id):
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
+        body = (request.form.get("body") or "").strip()
+        if not body:
+            flash("Note cannot be empty", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        db.session.add(
+            Note(dossier_id=dossier.id, author_id=current_user.id, body=body)
+        )
+        db.session.commit()
+        _audit("add_note", dossier_id=dossier.id, detail=body[:80])
+        flash("Note added", "success")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    @app.route("/dossier/<int:dossier_id>/notes/<int:note_id>/delete", methods=["POST"])
+    @login_required
+    def delete_note(dossier_id, note_id):
+        dossier, role = _get_dossier_access(dossier_id, "edit")
+        note = db.session.get(Note, note_id)
+        if note is None or note.dossier_id != dossier.id:
+            abort(404)
+        # Owners can remove any note; editors can remove only their own.
+        if role != "owner" and note.author_id != current_user.id:
+            abort(403)
+        db.session.delete(note)
+        db.session.commit()
+        _audit("delete_note", dossier_id=dossier.id)
+        flash("Note deleted", "success")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    @app.route("/dossier/<int:dossier_id>/tags", methods=["POST"])
+    @login_required
+    def add_tag(dossier_id):
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
+        name = (request.form.get("name") or "").strip().lower()
+        if not name:
+            flash("Tag cannot be empty", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        name = name[:64]
+        exists = (
+            db.session.query(Tag).filter_by(dossier_id=dossier.id, name=name).first()
+        )
+        if exists:
+            flash(f"Tag '{name}' already exists", "error")
+        else:
+            db.session.add(Tag(dossier_id=dossier.id, name=name))
+            db.session.commit()
+            _audit("add_tag", dossier_id=dossier.id, detail=name)
+            flash(f"Added tag '{name}'", "success")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    @app.route("/dossier/<int:dossier_id>/tags/<int:tag_id>/delete", methods=["POST"])
+    @login_required
+    def delete_tag(dossier_id, tag_id):
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
+        tag = db.session.get(Tag, tag_id)
+        if tag is None or tag.dossier_id != dossier.id:
+            abort(404)
+        name = tag.name
+        db.session.delete(tag)
+        db.session.commit()
+        _audit("remove_tag", dossier_id=dossier.id, detail=name)
+        flash(f"Removed tag '{name}'", "success")
         return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
     # ------------------------------------------------------------- modules
