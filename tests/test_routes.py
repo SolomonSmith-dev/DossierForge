@@ -94,3 +94,68 @@ def test_overview_returns_200_for_owner(client, app):
 def test_overview_404_for_missing(client):
     register(client)
     assert client.get("/dossier/999999").status_code == 404
+
+
+def _make_dossier(client, app, name="acme"):
+    client.post("/dossier/new", data={"name": name, "authorized": "yes"})
+    with app.app_context():
+        return db.session.query(Dossier).filter_by(name=name).one().id
+
+
+def test_export_markdown_and_json(client, app):
+    register(client)
+    dossier_id = _make_dossier(client, app, name="Acme Corp")
+    client.post(
+        f"/dossier/{dossier_id}/osint/breach", data={"email": "demo@example.com"}
+    )
+
+    md = client.get(f"/dossier/{dossier_id}/export.md")
+    assert md.status_code == 200
+    assert md.mimetype == "text/markdown"
+    assert b"# Dossier Report: Acme Corp" in md.data
+    assert b"## Authorized use" in md.data
+    assert b"## Audit trail" in md.data
+    assert "attachment" in md.headers["Content-Disposition"]
+
+    js = client.get(f"/dossier/{dossier_id}/export.json")
+    assert js.status_code == 200
+    assert js.mimetype == "application/json"
+    import json as _json
+
+    payload = _json.loads(js.data)
+    assert payload["name"] == "Acme Corp"
+    assert any(a["action"] == "run_breach" for a in payload["audit"])
+
+
+def test_export_is_isolated(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="secret")
+
+    intruder = app.test_client()
+    register(intruder, email="intruder@example.com")
+    assert intruder.get(f"/dossier/{dossier_id}/export.md").status_code == 404
+
+
+def test_delete_dossier(client, app):
+    register(client)
+    dossier_id = _make_dossier(client, app)
+    resp = client.post(f"/dossier/{dossier_id}/delete", follow_redirects=False)
+    assert resp.status_code == 302
+    with app.app_context():
+        assert db.session.get(Dossier, dossier_id) is None
+        assert (
+            db.session.query(AuditLog).filter_by(action="delete_dossier").count() == 1
+        )
+
+
+def test_delete_is_isolated(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="secret")
+
+    intruder = app.test_client()
+    register(intruder, email="intruder@example.com")
+    assert intruder.post(f"/dossier/{dossier_id}/delete").status_code == 404
+    with app.app_context():
+        assert db.session.get(Dossier, dossier_id) is not None

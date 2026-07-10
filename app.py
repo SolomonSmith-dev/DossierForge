@@ -7,9 +7,12 @@ audit trail. Dossiers are isolated per user account.
 
 import json
 import os
+import shutil
+from datetime import datetime, timezone
 
 from flask import (
     Flask,
+    Response,
     abort,
     flash,
     redirect,
@@ -26,6 +29,7 @@ from flask_login import (
 )
 
 from models import AuditLog, Dossier, User, db
+from modules.export import render_json, render_markdown
 from modules.nmap import get_nmap_summary, get_open_ports, run_nmap_scan
 from modules.osint import (
     check_breach_data,
@@ -115,6 +119,37 @@ def _get_owned_dossier(dossier_id):
     if dossier is None or dossier.owner_id != current_user.id:
         abort(404)
     return dossier
+
+
+def _build_report(dossier, target_dir):
+    lists = _load_lists(target_dir)
+    return {
+        "name": dossier.name,
+        "alias": dossier.alias,
+        "organization": dossier.organization,
+        "authorization_scope": dossier.authorization_scope,
+        "attested_at": dossier.attested_at.isoformat(),
+        "created_at": dossier.created_at.isoformat(),
+        "assets": lists,
+        "whois": get_whois_summary(target_dir),
+        "nmap": get_nmap_summary(target_dir),
+        "open_ports": get_open_ports(target_dir),
+        "osint": get_osint_summary(target_dir),
+        "audit": [
+            {
+                "action": a.action,
+                "detail": a.detail,
+                "at": a.created_at.isoformat(),
+            }
+            for a in dossier.audit_logs
+        ],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _slugify(value):
+    slug = "".join(c if c.isalnum() else "-" for c in value.lower()).strip("-")
+    return slug or "dossier"
 
 
 def _audit(action, dossier_id=None, detail=""):
@@ -248,6 +283,40 @@ def register_routes(app):
             osint_summary=get_osint_summary(target_dir),
             audit_logs=dossier.audit_logs,
         )
+
+    @app.route("/dossier/<int:dossier_id>/export.<fmt>")
+    @login_required
+    def export_dossier(dossier_id, fmt):
+        dossier = _get_owned_dossier(dossier_id)
+        target_dir = _dossier_data_dir(dossier.id)
+        report = _build_report(dossier, target_dir)
+        slug = f"{_slugify(dossier.name)}-{dossier.id}"
+        if fmt == "json":
+            body, mimetype, ext = render_json(report), "application/json", "json"
+        elif fmt in ("md", "markdown"):
+            body, mimetype, ext = render_markdown(report), "text/markdown", "md"
+        else:
+            abort(404)
+        _audit("export_dossier", dossier_id=dossier.id, detail=ext)
+        return Response(
+            body,
+            mimetype=mimetype,
+            headers={"Content-Disposition": f'attachment; filename="{slug}.{ext}"'},
+        )
+
+    @app.route("/dossier/<int:dossier_id>/delete", methods=["POST"])
+    @login_required
+    def delete_dossier(dossier_id):
+        dossier = _get_owned_dossier(dossier_id)
+        name = dossier.name
+        target_dir = os.path.join(app.config["DOSSIER_DATA_DIR"], str(dossier.id))
+        db.session.delete(dossier)
+        db.session.commit()
+        shutil.rmtree(target_dir, ignore_errors=True)
+        # Dossier (and its audit rows) are gone; record a user-level entry.
+        _audit("delete_dossier", dossier_id=None, detail=name)
+        flash(f"Deleted dossier '{name}'", "success")
+        return redirect(url_for("index"))
 
     # ------------------------------------------------------------- modules
     @app.route("/dossier/<int:dossier_id>/whois", methods=["POST"])
