@@ -28,7 +28,7 @@ from flask_login import (
     logout_user,
 )
 
-from models import AuditLog, Dossier, User, db
+from models import AuditLog, Dossier, DossierShare, User, db
 from modules.export import render_json, render_markdown
 from modules.nmap import get_nmap_summary, get_open_ports, run_nmap_scan
 from modules.osint import (
@@ -114,11 +114,32 @@ def _save_lists(target_dir, data):
         json.dump(data, f, indent=2)
 
 
-def _get_owned_dossier(dossier_id):
+def _get_dossier_access(dossier_id, need="view"):
+    """Return (dossier, role) enforcing access.
+
+    role is "owner", "editor", or "viewer". `need` is one of:
+      - "view":  owner or any collaborator
+      - "edit":  owner or editor collaborator
+      - "owner": owner only
+    404 hides existence from users with no access; 403 signals insufficient role.
+    """
     dossier = db.session.get(Dossier, dossier_id)
-    if dossier is None or dossier.owner_id != current_user.id:
+    if dossier is None:
         abort(404)
-    return dossier
+    if dossier.owner_id == current_user.id:
+        return dossier, "owner"
+    if need == "owner":
+        abort(404)
+    share = (
+        db.session.query(DossierShare)
+        .filter_by(dossier_id=dossier_id, user_id=current_user.id)
+        .first()
+    )
+    if share is None:
+        abort(404)
+    if need == "edit" and share.role != DossierShare.ROLE_EDITOR:
+        abort(403)
+    return dossier, share.role
 
 
 def _build_report(dossier, target_dir):
@@ -225,7 +246,14 @@ def register_routes(app):
             .order_by(Dossier.created_at.desc())
             .all()
         )
-        return render_template("index.html", dossiers=dossiers)
+        shared = (
+            db.session.query(Dossier, DossierShare.role)
+            .join(DossierShare, DossierShare.dossier_id == Dossier.id)
+            .filter(DossierShare.user_id == current_user.id)
+            .order_by(Dossier.created_at.desc())
+            .all()
+        )
+        return render_template("index.html", dossiers=dossiers, shared=shared)
 
     @app.route("/dossier/new", methods=["GET", "POST"])
     @login_required
@@ -261,7 +289,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>")
     @login_required
     def dossier_overview(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, role = _get_dossier_access(dossier_id, "view")
         target_dir = _dossier_data_dir(dossier.id)
         lists = _load_lists(target_dir)
         overview = {
@@ -277,6 +305,9 @@ def register_routes(app):
             "dossier_overview.html",
             dossier=dossier,
             overview=overview,
+            role=role,
+            can_edit=role in ("owner", "editor"),
+            collaborators=dossier.shares if role == "owner" else None,
             whois_summary=get_whois_summary(target_dir),
             nmap_summary=get_nmap_summary(target_dir),
             open_ports=get_open_ports(target_dir),
@@ -287,7 +318,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>/export.<fmt>")
     @login_required
     def export_dossier(dossier_id, fmt):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "view")
         target_dir = _dossier_data_dir(dossier.id)
         report = _build_report(dossier, target_dir)
         slug = f"{_slugify(dossier.name)}-{dossier.id}"
@@ -307,7 +338,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>/delete", methods=["POST"])
     @login_required
     def delete_dossier(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "owner")
         name = dossier.name
         target_dir = os.path.join(app.config["DOSSIER_DATA_DIR"], str(dossier.id))
         db.session.delete(dossier)
@@ -318,11 +349,62 @@ def register_routes(app):
         flash(f"Deleted dossier '{name}'", "success")
         return redirect(url_for("index"))
 
+    # -------------------------------------------------------- collaboration
+    @app.route("/dossier/<int:dossier_id>/share", methods=["POST"])
+    @login_required
+    def share_dossier(dossier_id):
+        dossier, _role = _get_dossier_access(dossier_id, "owner")
+        email = (request.form.get("email") or "").strip().lower()
+        role = request.form.get("role", DossierShare.ROLE_VIEWER)
+        if role not in (DossierShare.ROLE_VIEWER, DossierShare.ROLE_EDITOR):
+            role = DossierShare.ROLE_VIEWER
+        if not email:
+            flash("Collaborator email is required", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        collaborator = db.session.query(User).filter_by(email=email).first()
+        if collaborator is None:
+            flash(f"No account found for {email}", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        if collaborator.id == dossier.owner_id:
+            flash("You already own this dossier", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        share = (
+            db.session.query(DossierShare)
+            .filter_by(dossier_id=dossier.id, user_id=collaborator.id)
+            .first()
+        )
+        if share:
+            share.role = role
+            flash(f"Updated {email} to {role}", "success")
+        else:
+            db.session.add(
+                DossierShare(dossier_id=dossier.id, user_id=collaborator.id, role=role)
+            )
+            flash(f"Shared with {email} as {role}", "success")
+        db.session.commit()
+        _audit("share_dossier", dossier_id=dossier.id, detail=f"{email}:{role}")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    @app.route("/dossier/<int:dossier_id>/unshare", methods=["POST"])
+    @login_required
+    def unshare_dossier(dossier_id):
+        dossier, _role = _get_dossier_access(dossier_id, "owner")
+        share_id = request.form.get("share_id")
+        share = db.session.get(DossierShare, int(share_id)) if share_id else None
+        if share is None or share.dossier_id != dossier.id:
+            abort(404)
+        email = share.user.email
+        db.session.delete(share)
+        db.session.commit()
+        _audit("unshare_dossier", dossier_id=dossier.id, detail=email)
+        flash(f"Removed {email}", "success")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
     # ------------------------------------------------------------- modules
     @app.route("/dossier/<int:dossier_id>/whois", methods=["POST"])
     @login_required
     def run_whois_query(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
         target_dir = _dossier_data_dir(dossier.id)
         domain = request.form.get("domain")
         if not domain:
@@ -346,7 +428,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>/nmap", methods=["POST"])
     @login_required
     def run_nmap_scan_route(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
         target_dir = _dossier_data_dir(dossier.id)
         target = request.form.get("target")
         scan_type = request.form.get("scan_type", "basic")
@@ -374,7 +456,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>/osint/social", methods=["POST"])
     @login_required
     def run_social_media_search(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
         target_dir = _dossier_data_dir(dossier.id)
         target = request.form.get("target")
         if not target:
@@ -391,7 +473,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>/osint/emails", methods=["POST"])
     @login_required
     def run_email_search(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
         target_dir = _dossier_data_dir(dossier.id)
         domain = request.form.get("domain")
         if not domain:
@@ -413,7 +495,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>/osint/breach", methods=["POST"])
     @login_required
     def run_breach_check(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
         target_dir = _dossier_data_dir(dossier.id)
         email = request.form.get("email")
         if not email:
@@ -430,7 +512,7 @@ def register_routes(app):
     @app.route("/dossier/<int:dossier_id>/osint/github", methods=["POST"])
     @login_required
     def run_github_search(dossier_id):
-        dossier = _get_owned_dossier(dossier_id)
+        dossier, _role = _get_dossier_access(dossier_id, "edit")
         target_dir = _dossier_data_dir(dossier.id)
         username = request.form.get("username")
         if not username:

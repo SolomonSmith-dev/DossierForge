@@ -65,6 +65,34 @@ class Dossier(db.Model):
         cascade="all, delete-orphan",
         order_by="AuditLog.created_at.desc()",
     )
+    shares = db.relationship(
+        "DossierShare", back_populates="dossier", cascade="all, delete-orphan"
+    )
+
+
+class DossierShare(db.Model):
+    """Grants another user access to a dossier as viewer or editor."""
+
+    __tablename__ = "dossier_shares"
+    __table_args__ = (
+        db.UniqueConstraint("dossier_id", "user_id", name="uq_share_dossier_user"),
+    )
+
+    ROLE_VIEWER = "viewer"
+    ROLE_EDITOR = "editor"
+
+    id = db.Column(db.Integer, primary_key=True)
+    dossier_id = db.Column(
+        db.Integer, db.ForeignKey("dossiers.id"), nullable=False, index=True
+    )
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    role = db.Column(db.String(16), default=ROLE_VIEWER, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+
+    dossier = db.relationship("Dossier", back_populates="shares")
+    user = db.relationship("User")
 
 
 class AuditLog(db.Model):

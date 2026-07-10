@@ -7,7 +7,7 @@ offline breach-check module so no network or system binaries are required.
 
 from conftest import register
 
-from models import AuditLog, Dossier, User, db
+from models import AuditLog, Dossier, DossierShare, User, db
 
 
 def test_index_requires_login(client):
@@ -159,3 +159,94 @@ def test_delete_is_isolated(app):
     assert intruder.post(f"/dossier/{dossier_id}/delete").status_code == 404
     with app.app_context():
         assert db.session.get(Dossier, dossier_id) is not None
+
+
+def _two_users(app, second_email="teammate@example.com"):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="Shared Case")
+    teammate = app.test_client()
+    register(teammate, email=second_email)
+    return owner, teammate, dossier_id
+
+
+def test_share_grants_viewer_read_only_access(app):
+    owner, viewer, dossier_id = _two_users(app)
+    # No access before sharing.
+    assert viewer.get(f"/dossier/{dossier_id}").status_code == 404
+
+    owner.post(
+        f"/dossier/{dossier_id}/share",
+        data={"email": "teammate@example.com", "role": "viewer"},
+    )
+    # Viewer can read and export...
+    assert viewer.get(f"/dossier/{dossier_id}").status_code == 200
+    assert viewer.get(f"/dossier/{dossier_id}/export.md").status_code == 200
+    # ...but cannot run modules (edit) or delete/share (owner).
+    assert (
+        viewer.post(
+            f"/dossier/{dossier_id}/osint/breach", data={"email": "x@y.com"}
+        ).status_code
+        == 403
+    )
+    assert viewer.post(f"/dossier/{dossier_id}/delete").status_code == 404
+    assert (
+        viewer.post(
+            f"/dossier/{dossier_id}/share", data={"email": "z@z.com"}
+        ).status_code
+        == 404
+    )
+
+
+def test_editor_can_run_modules_but_not_delete(app):
+    owner, editor, dossier_id = _two_users(app)
+    owner.post(
+        f"/dossier/{dossier_id}/share",
+        data={"email": "teammate@example.com", "role": "editor"},
+    )
+    resp = editor.post(
+        f"/dossier/{dossier_id}/osint/breach",
+        data={"email": "demo@example.com"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Breach check completed" in resp.data
+    # Editor still cannot delete.
+    assert editor.post(f"/dossier/{dossier_id}/delete").status_code == 404
+
+
+def test_share_requires_existing_account(app):
+    owner, _teammate, dossier_id = _two_users(app)
+    owner.post(
+        f"/dossier/{dossier_id}/share",
+        data={"email": "nobody@nowhere.com", "role": "viewer"},
+        follow_redirects=True,
+    )
+    with app.app_context():
+        assert db.session.query(DossierShare).count() == 0
+
+
+def test_unshare_revokes_access(app):
+    owner, viewer, dossier_id = _two_users(app)
+    owner.post(
+        f"/dossier/{dossier_id}/share",
+        data={"email": "teammate@example.com", "role": "viewer"},
+    )
+    with app.app_context():
+        share_id = db.session.query(DossierShare).one().id
+    assert viewer.get(f"/dossier/{dossier_id}").status_code == 200
+
+    owner.post(f"/dossier/{dossier_id}/unshare", data={"share_id": share_id})
+    assert viewer.get(f"/dossier/{dossier_id}").status_code == 404
+
+
+def test_shared_dossier_appears_on_dashboard(app):
+    owner, viewer, dossier_id = _two_users(app)
+    owner.post(
+        f"/dossier/{dossier_id}/share",
+        data={"email": "teammate@example.com", "role": "viewer"},
+    )
+    resp = viewer.get("/")
+    assert resp.status_code == 200
+    assert b"Shared with you" in resp.data
+    assert b"Shared Case" in resp.data
