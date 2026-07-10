@@ -2,9 +2,26 @@
 
 ## Cursor Cloud specific instructions
 
-DossierForge is a single Flask OSINT web app (Python). There is no database; each
-dossier is stored as JSON files under `dossiers/` (gitignored). Standard setup/run
-commands live in `README.md`; only non-obvious caveats are noted here.
+DossierForge is a multi-user Flask OSINT SaaS (Python). It uses Flask-Login for
+auth and Flask-SQLAlchemy for persistence. Dossier metadata, users, and the audit
+trail live in a SQL database (SQLite by default at `instance/dossierforge.db`,
+Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk under
+`instance/dossier_data/<dossier_id>/`. Standard setup/run commands live in
+`README.md`; only non-obvious caveats are noted here.
+
+### Architecture notes
+- The app uses an application factory: `create_app(config)` in `app.py`. `app.py`
+  also exposes a module-level `app = create_app()` so `python app.py` and
+  `gunicorn "app:create_app()"` both work. Tests build their own app via the factory
+  with a temp SQLite DB and temp `DOSSIER_DATA_DIR` (see `tests/conftest.py`).
+- The DB schema is created automatically on startup via `db.create_all()`. There are
+  no migrations yet, so if you change `models.py`, delete `instance/dossierforge.db`
+  (dev only) to recreate it.
+- The `instance/` folder (DB + recon artifacts) is gitignored; deleting it resets all
+  local users and dossiers.
+- Product guardrail: creating a dossier requires an authorized-use attestation
+  (`authorized` checkbox) and every recon action is written to `AuditLog`. Keep these
+  when adding new recon routes.
 
 ### Environment
 - Dependencies are installed into a virtualenv at `.venv/` (the update script creates

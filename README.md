@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/SolomonSmith-dev/DossierForge/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
-A Flask-based OSINT dossier builder for aggregating reconnaissance data on a target. Input a name, domain, or IP. DossierForge runs WHOIS lookups, nmap port scans, and social media/email searches, then stores everything in a structured dossier for review.
+A Flask-based multi-user OSINT dossier SaaS for aggregating reconnaissance data on a target. Sign up, create per-target dossiers, and run WHOIS lookups, nmap port scans, and social media/email searches. Everything is stored in a structured, per-user dossier for review. Each dossier requires an authorized-use attestation, and every recon action is written to an audit trail.
 
 > **Authorized use only.** This tool is for security research, CTF practice, and reconnaissance against targets you own or have explicit written permission to scan. Running unsolicited scans or OSINT enumeration against third parties is illegal in most jurisdictions and a hard line. Use a personal lab, an HTB box, or your employer's authorized scope.
 
@@ -12,18 +12,22 @@ Security researchers and pentesters spend the first hour of any engagement runni
 
 ## Features
 
+- Multi-user accounts: register, sign in, and keep dossiers isolated per user
+- Authorized-use attestation: creating a dossier requires confirming authorization; the attestation and scope are recorded
+- Audit trail: every dossier action and recon run is logged per dossier
 - WHOIS lookup: domain registration data, registrar, nameservers, expiry
 - nmap scanning: port scan with service detection and open-port summary
 - OSINT modules: social media search, email enumeration, breach check, GitHub info
 - Dossier management: create, organize, and browse target profiles via web UI
-- Persistent storage: each dossier saved as structured JSON for later review
 
 ## Stack
 
-- Python 3.8+, Flask
+- Python 3.8+, Flask (app factory in `create_app()`)
+- Flask-Login (auth), Flask-SQLAlchemy (ORM)
+- Database: SQLite in dev (`instance/dossierforge.db`), Postgres-ready via `DATABASE_URL`
 - `python-whois`, `nmap` (system binary), `requests`
-- Jinja2 templates
-- JSON file-based storage (one file per dossier)
+- Jinja2 templates; recon artifacts stored on disk under `instance/dossier_data/<id>/`
+- gunicorn for production serving
 
 ## Quickstart
 
@@ -46,6 +50,8 @@ cp .env.example .env
 | Variable | Required | Description |
 |---|---|---|
 | `SECRET_KEY` | yes | Random string used to sign Flask sessions |
+| `DATABASE_URL` | no | SQLAlchemy database URL (defaults to SQLite under `instance/`). Use `postgresql://...` for Postgres |
+| `DOSSIER_DATA_DIR` | no | Directory for recon artifacts (defaults to `instance/dossier_data`) |
 | `GITHUB_TOKEN` | no | GitHub PAT for higher API rate limits (used in GitHub lookups) |
 | `NMAP_PATH` | no | Absolute path to `nmap` if not on `$PATH` |
 
@@ -64,13 +70,23 @@ python app.py
 bash start_app.sh
 ```
 
-Open `http://localhost:5001` in your browser.
+Open `http://localhost:5001` in your browser. The database and instance folder are
+created automatically on first run.
+
+For production, serve the app factory with gunicorn:
+
+```bash
+gunicorn "app:create_app()" --bind 0.0.0.0:5001
+```
 
 ## Usage
 
-1. Create a new dossier. Enter a target name, alias, and organization.
-2. Run modules against the target (WHOIS, nmap, OSINT). Each module appends its results to the dossier.
-3. Review aggregated results on the dossier overview page. Export the JSON for downstream tooling if needed.
+1. Sign up for an account (or sign in). Dossiers are private to your account.
+2. Create a new dossier. Enter a target name, alias, and organization, and confirm
+   the authorized-use attestation (with an optional scope/reference).
+3. Run modules against the target (WHOIS, nmap, OSINT). Each module appends its
+   results to the dossier and records an entry in the audit trail.
+4. Review aggregated results and the audit trail on the dossier overview page.
 
 ## Modules
 
@@ -84,10 +100,11 @@ Open `http://localhost:5001` in your browser.
 
 ```
 .
-├── app.py                # Flask entry point
+├── app.py                # Flask app factory, auth, routes
+├── models.py             # SQLAlchemy models (User, Dossier, AuditLog)
 ├── modules/              # WHOIS, nmap, OSINT recon modules
-├── templates/            # Jinja2 templates
-├── dossiers/             # per-target JSON storage (gitignored in practice)
+├── templates/            # Jinja2 templates (base, auth, dossier views)
+├── instance/             # SQLite DB + recon artifacts (gitignored)
 ├── tests/
 ├── start_app.sh
 ├── requirements.txt
