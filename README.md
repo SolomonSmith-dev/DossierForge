@@ -15,6 +15,7 @@ Security researchers and pentesters spend the first hour of any engagement runni
 - Multi-user accounts: register, sign in, and keep dossiers isolated per user
 - Collaboration: share a dossier with teammates as viewer (read-only) or editor (can run recon)
 - Organizations: create team workspaces, manage members (admin/member), and share dossiers with a whole team at a role
+- Invitations: invite collaborators/org members by email before they have an account; claimed on signup or via invite link
 - Authorized-use attestation: creating a dossier requires confirming authorization; the attestation and scope are recorded
 - Audit trail: every dossier action and recon run is logged per dossier
 - WHOIS lookup: domain registration data, registrar, nameservers, expiry
@@ -135,9 +136,9 @@ gunicorn "app:create_app()" --bind 0.0.0.0:5001
 - [x] Background job queue for long-running scans
 - [x] Organizations / team-wide dossiers
 - [x] Database migrations (Alembic / Flask-Migrate)
+- [x] Pending email invitations for orgs/shares
 - [ ] Durable job queue (Celery/RQ + Redis) for multi-worker deployments
 - [ ] Per-seat billing on top of organizations
-- [ ] Pending email invitations for orgs/shares
 
 ## License
 

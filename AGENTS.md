@@ -14,13 +14,12 @@ Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk un
   also exposes a module-level `app = create_app()` so `python app.py` and
   `gunicorn "app:create_app()"` both work. Tests build their own app via the factory
   with a temp SQLite DB and temp `DOSSIER_DATA_DIR` (see `tests/conftest.py`).
-- The DB schema is managed by **Alembic** (Flask-Migrate). Migrations live under
-  `migrations/versions/`. Non-test startups call `migrate_upgrade()` automatically.
-  Tests still use `db.create_all()` for speed. After changing `models.py`:
-  `SKIP_DB_UPGRADE=1 flask --app "app:create_app" db migrate -m "..."`, then
-  `flask --app "app:create_app" db upgrade` (or just restart the app). Set
-  `SKIP_DB_UPGRADE=1` while generating a revision so autogenerate isn't confused
-  by an already-upgraded DB.
+- Invitations (`Invitation` model): org admins and dossier owners can invite by
+  email even when the invitee has no account. Existing accounts are granted access
+  immediately; otherwise the invite stays `pending` until claimed on register/login
+  (`_claim_pending_invites`) or via `/invite/<token>`. Revoke with
+  `POST /invites/<id>/revoke`. Generating a new revision after model changes:
+  `SKIP_DB_UPGRADE=1 flask --app "app:create_app" db migrate -m "..."`.
 - The `instance/` folder (DB + recon artifacts) is gitignored; deleting it resets all
   local users and dossiers (migrations will recreate the schema on next start).
 - Product guardrail: creating a dossier requires an authorized-use attestation
