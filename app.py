@@ -29,6 +29,7 @@ from flask_login import (
     login_user,
     logout_user,
 )
+from flask_migrate import Migrate, upgrade as migrate_upgrade
 
 from models import (
     AuditLog,
@@ -55,6 +56,7 @@ from modules.osint import (
 from modules.whois import get_whois_summary, run_whois
 
 login_manager = LoginManager()
+migrate = Migrate()
 # Background worker for recon jobs. Small pool: recon is I/O-bound and we want
 # the request thread to return immediately instead of blocking on a slow scan.
 _scan_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scan")
@@ -86,6 +88,9 @@ def create_app(config=None):
         # background worker. Useful for tests and simple single-process setups.
         SCAN_JOBS_EAGER=os.environ.get("SCAN_JOBS_EAGER", "").lower()
         in ("1", "true", "yes"),
+        # Skip auto-applying migrations (e.g. while generating a new revision).
+        SKIP_DB_UPGRADE=os.environ.get("SKIP_DB_UPGRADE", "").lower()
+        in ("1", "true", "yes"),
     )
     if config:
         app.config.update(config)
@@ -93,12 +98,22 @@ def create_app(config=None):
     os.makedirs(app.config["DOSSIER_DATA_DIR"], exist_ok=True)
 
     db.init_app(app)
+    migrate.init_app(app, db)
     login_manager.init_app(app)
     login_manager.login_view = "login"
     login_manager.login_message_category = "error"
 
     with app.app_context():
-        db.create_all()
+        # Tests use a throwaway SQLite DB and create_all for speed. Everywhere
+        # else we apply Alembic migrations so schema changes don't need a wipe.
+        if app.config.get("TESTING"):
+            db.create_all()
+        elif not app.config.get("SKIP_DB_UPGRADE"):
+            migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
+            if os.path.isdir(migrations_dir):
+                migrate_upgrade()
+            else:
+                db.create_all()
 
     register_routes(app)
     return app
@@ -504,6 +519,29 @@ def register_routes(app):
             _audit("create_dossier", dossier_id=dossier.id, detail=name)
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
         return render_template("new_dossier.html")
+
+    @app.route("/dossier/<int:dossier_id>/edit", methods=["GET", "POST"])
+    @login_required
+    def edit_dossier(dossier_id):
+        # Metadata (incl. authorization scope) is owner-only; collaborators
+        # use notes/tags for their contributions.
+        dossier, _role = _get_dossier_access(dossier_id, "owner")
+        if request.method == "POST":
+            name = (request.form.get("name") or "").strip()
+            if not name:
+                flash("Name is required", "error")
+                return render_template("edit_dossier.html", dossier=dossier)
+            dossier.name = name
+            dossier.alias = (request.form.get("alias") or "").strip()
+            dossier.organization = (request.form.get("organization") or "").strip()
+            dossier.authorization_scope = (
+                request.form.get("authorization_scope") or ""
+            ).strip()
+            db.session.commit()
+            _audit("edit_dossier", dossier_id=dossier.id, detail=name)
+            flash("Dossier updated", "success")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return render_template("edit_dossier.html", dossier=dossier)
 
     @app.route("/dossier/<int:dossier_id>")
     @login_required

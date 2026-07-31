@@ -1,6 +1,7 @@
 Flask
 Flask-SQLAlchemy
 Flask-Login
+Flask-Migrate
 python-whois
 lxml
 requests

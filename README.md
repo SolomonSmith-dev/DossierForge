@@ -29,8 +29,9 @@ Security researchers and pentesters spend the first hour of any engagement runni
 ## Stack
 
 - Python 3.8+, Flask (app factory in `create_app()`)
-- Flask-Login (auth), Flask-SQLAlchemy (ORM)
+- Flask-Login (auth), Flask-SQLAlchemy (ORM), Flask-Migrate (Alembic)
 - Database: SQLite in dev (`instance/dossierforge.db`), Postgres-ready via `DATABASE_URL`
+- Schema managed by Alembic migrations under `migrations/` (auto-applied on startup)
 - `python-whois`, `nmap` (system binary), `requests`
 - Jinja2 templates; recon artifacts stored on disk under `instance/dossier_data/<id>/`
 - gunicorn for production serving
@@ -77,8 +78,14 @@ python app.py
 bash start_app.sh
 ```
 
-Open `http://localhost:5001` in your browser. The database and instance folder are
-created automatically on first run.
+Open `http://localhost:5001` in your browser. The database is created/upgraded
+automatically on startup via Alembic migrations (`migrations/`). Schema changes:
+
+```bash
+# After editing models.py:
+SKIP_DB_UPGRADE=1 flask --app "app:create_app" db migrate -m "describe change"
+flask --app "app:create_app" db upgrade
+```
 
 For production, serve the app factory with gunicorn:
 
@@ -127,9 +134,10 @@ gunicorn "app:create_app()" --bind 0.0.0.0:5001
 - [x] Investigator notes, tags, and dashboard search
 - [x] Background job queue for long-running scans
 - [x] Organizations / team-wide dossiers
-- [ ] Database migrations (Alembic)
+- [x] Database migrations (Alembic / Flask-Migrate)
 - [ ] Durable job queue (Celery/RQ + Redis) for multi-worker deployments
 - [ ] Per-seat billing on top of organizations
+- [ ] Pending email invitations for orgs/shares
 
 ## License
 

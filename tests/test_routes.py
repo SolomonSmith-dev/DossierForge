@@ -447,3 +447,47 @@ def test_org_shared_dossier_on_member_dashboard(app):
     resp = member.get("/")
     assert b"Shared with you" in resp.data
     assert b"Team Case" in resp.data
+
+
+def test_edit_dossier_updates_metadata(client, app):
+    register(client)
+    dossier_id = _make_dossier(client, app, name="Old Name")
+    resp = client.post(
+        f"/dossier/{dossier_id}/edit",
+        data={
+            "name": "New Name",
+            "alias": "nn",
+            "organization": "NewOrg",
+            "authorization_scope": "SOW-99",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Dossier updated" in resp.data
+    assert b"New Name" in resp.data
+    assert b"SOW-99" in resp.data
+    with app.app_context():
+        dossier = db.session.get(Dossier, dossier_id)
+        assert dossier.name == "New Name"
+        assert dossier.alias == "nn"
+        assert dossier.organization == "NewOrg"
+        assert dossier.authorization_scope == "SOW-99"
+        assert db.session.query(AuditLog).filter_by(action="edit_dossier").count() == 1
+
+
+def test_edit_dossier_is_owner_only(app):
+    owner, viewer, dossier_id = _two_users(app)
+    owner.post(
+        f"/dossier/{dossier_id}/share",
+        data={"email": "teammate@example.com", "role": "editor"},
+    )
+    # Even editors cannot edit dossier metadata.
+    assert viewer.get(f"/dossier/{dossier_id}/edit").status_code == 404
+    assert (
+        viewer.post(
+            f"/dossier/{dossier_id}/edit", data={"name": "Hijacked"}
+        ).status_code
+        == 404
+    )
+    with app.app_context():
+        assert db.session.get(Dossier, dossier_id).name == "Shared Case"

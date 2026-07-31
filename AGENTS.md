@@ -14,26 +14,27 @@ Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk un
   also exposes a module-level `app = create_app()` so `python app.py` and
   `gunicorn "app:create_app()"` both work. Tests build their own app via the factory
   with a temp SQLite DB and temp `DOSSIER_DATA_DIR` (see `tests/conftest.py`).
-- The DB schema is created automatically on startup via `db.create_all()`. There are
-  no migrations yet, so if you change `models.py`, delete `instance/dossierforge.db`
-  (dev only) to recreate it.
+- The DB schema is managed by **Alembic** (Flask-Migrate). Migrations live under
+  `migrations/versions/`. Non-test startups call `migrate_upgrade()` automatically.
+  Tests still use `db.create_all()` for speed. After changing `models.py`:
+  `SKIP_DB_UPGRADE=1 flask --app "app:create_app" db migrate -m "..."`, then
+  `flask --app "app:create_app" db upgrade` (or just restart the app). Set
+  `SKIP_DB_UPGRADE=1` while generating a revision so autogenerate isn't confused
+  by an already-upgraded DB.
 - The `instance/` folder (DB + recon artifacts) is gitignored; deleting it resets all
-  local users and dossiers.
+  local users and dossiers (migrations will recreate the schema on next start).
 - Product guardrail: creating a dossier requires an authorized-use attestation
   (`authorized` checkbox) and every recon action is written to `AuditLog`. Keep these
-  when adding new recon routes.
+  when adding new recon routes. Dossier metadata edits (`/dossier/<id>/edit`) are
+  owner-only so the authorization scope stays under the owner's control.
 - Access control: use `_get_dossier_access(dossier_id, need=...)` in `app.py` for all
   dossier routes. `need` is `"view"` (owner or any collaborator), `"edit"` (owner or
-  editor collaborator; recon/module routes), or `"owner"` (owner-only; delete/share).
-  It returns `(dossier, role)`; no-access is 404 and insufficient-role is 403. A user's
-  effective non-owner role (`_effective_shared_role`) is the best of any direct
+  editor collaborator; recon/module routes), or `"owner"` (owner-only; delete/share/edit
+  metadata). It returns `(dossier, role)`; no-access is 404 and insufficient-role is 403.
+  A user's effective non-owner role (`_effective_shared_role`) is the best of any direct
   `DossierShare` and any `DossierOrgAccess` for orgs they belong to (editor beats
   viewer). Organizations (`Organization`/`OrgMembership`) grant team-wide access;
   use `_get_org_membership(org_id, need_admin=...)` for org routes.
-- `db.create_all()` on startup adds *new* tables (e.g. `dossier_shares`, `notes`,
-  `tags`) but never alters existing ones. Adding a column to an existing model requires
-  deleting the dev DB (`instance/dossierforge.db`) or introducing migrations. Because
-  of this, new model features are modeled as new tables where practical.
 - Dossier report export (`modules/export.py`) is a pure renderer; the report dict is
   assembled in `app.py:_build_report` from DB metadata (incl. notes/tags) plus on-disk
   recon summaries. Add new sections in both places.
