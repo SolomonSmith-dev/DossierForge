@@ -9,7 +9,8 @@ import json
 import os
 import secrets
 import shutil
-from concurrent.futures import ThreadPoolExecutor
+import sys
+import threading
 from datetime import datetime, timezone
 
 from flask import (
@@ -59,9 +60,12 @@ from modules.whois import get_whois_summary, run_whois
 
 login_manager = LoginManager()
 migrate = Migrate()
-# Background worker for recon jobs. Small pool: recon is I/O-bound and we want
-# the request thread to return immediately instead of blocking on a slow scan.
-_scan_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scan")
+# Durable DB-backed scan worker: jobs live as ScanJob rows; a daemon thread
+# polls and claims them. Survives process restarts (orphaned "running" rows are
+# reclaimed to "queued" on startup). One worker thread per process.
+_scan_worker_lock = threading.Lock()
+_scan_worker_started = False
+_scan_worker_stop = threading.Event()
 
 
 def _normalize_db_uri(uri):
@@ -90,6 +94,12 @@ def create_app(config=None):
         # background worker. Useful for tests and simple single-process setups.
         SCAN_JOBS_EAGER=os.environ.get("SCAN_JOBS_EAGER", "").lower()
         in ("1", "true", "yes"),
+        # Durable poller (ignored when SCAN_JOBS_EAGER / TESTING).
+        SCAN_WORKER_ENABLED=os.environ.get("SCAN_WORKER_ENABLED", "true").lower()
+        in ("1", "true", "yes"),
+        SCAN_WORKER_POLL_SECONDS=float(
+            os.environ.get("SCAN_WORKER_POLL_SECONDS", "0.5")
+        ),
         # Skip auto-applying migrations (e.g. while generating a new revision).
         SKIP_DB_UPGRADE=os.environ.get("SKIP_DB_UPGRADE", "").lower()
         in ("1", "true", "yes"),
@@ -118,6 +128,7 @@ def create_app(config=None):
                 db.create_all()
 
     register_routes(app)
+    _maybe_start_scan_worker(app)
     return app
 
 
@@ -434,14 +445,16 @@ def _dispatch_scan(job, target_dir):
 
 
 def _execute_scan_job(app, job_id):
-    """Worker entrypoint: runs in a background thread with its own app context."""
+    """Worker entrypoint: runs with an app context (thread or eager call)."""
     with app.app_context():
         job = db.session.get(ScanJob, job_id)
         if job is None:
             return
-        job.status = ScanJob.STATUS_RUNNING
-        job.started_at = datetime.now(timezone.utc)
-        db.session.commit()
+        # Idempotent: claim may have already set running; eager path needs it.
+        if job.status != ScanJob.STATUS_RUNNING:
+            job.status = ScanJob.STATUS_RUNNING
+            job.started_at = datetime.now(timezone.utc)
+            db.session.commit()
         target_dir = os.path.join(app.config["DOSSIER_DATA_DIR"], str(job.dossier_id))
         os.makedirs(target_dir, exist_ok=True)
         try:
@@ -462,6 +475,101 @@ def _execute_scan_job(app, job_id):
         db.session.commit()
 
 
+def reclaim_orphaned_scan_jobs():
+    """Reset jobs left 'running' after a crash/restart so they can be retried."""
+    orphaned = db.session.query(ScanJob).filter_by(status=ScanJob.STATUS_RUNNING).all()
+    for job in orphaned:
+        job.status = ScanJob.STATUS_QUEUED
+        job.started_at = None
+        job.message = "Requeued after worker restart"
+    if orphaned:
+        db.session.commit()
+    return len(orphaned)
+
+
+def claim_next_scan_job():
+    """Atomically claim the oldest queued job. Returns job id or None."""
+    job = (
+        db.session.query(ScanJob)
+        .filter_by(status=ScanJob.STATUS_QUEUED)
+        .order_by(ScanJob.created_at.asc())
+        .first()
+    )
+    if job is None:
+        return None
+    # Conditional update so two workers cannot claim the same row.
+    rows = (
+        db.session.query(ScanJob)
+        .filter(
+            ScanJob.id == job.id,
+            ScanJob.status == ScanJob.STATUS_QUEUED,
+        )
+        .update(
+            {
+                "status": ScanJob.STATUS_RUNNING,
+                "started_at": datetime.now(timezone.utc),
+            },
+            synchronize_session=False,
+        )
+    )
+    db.session.commit()
+    if rows == 0:
+        return None
+    return job.id
+
+
+def process_one_queued_scan(app):
+    """Claim and run at most one queued job. Returns job id or None."""
+    with app.app_context():
+        job_id = claim_next_scan_job()
+    if job_id is None:
+        return None
+    _execute_scan_job(app, job_id)
+    return job_id
+
+
+def _scan_worker_loop(app):
+    poll = float(app.config.get("SCAN_WORKER_POLL_SECONDS", 0.5))
+    with app.app_context():
+        reclaim_orphaned_scan_jobs()
+    while not _scan_worker_stop.is_set():
+        job_id = process_one_queued_scan(app)
+        if job_id is None:
+            _scan_worker_stop.wait(timeout=poll)
+
+
+def _maybe_start_scan_worker(app):
+    """Start the durable poller once per process (skipped for tests / eager)."""
+    global _scan_worker_started
+    if app.config.get("TESTING") or app.config.get("SCAN_JOBS_EAGER"):
+        return
+    if not app.config.get("SCAN_WORKER_ENABLED", True):
+        return
+    # Avoid starting a poller against the real instance DB when pytest imports
+    # this module (module-level ``app = create_app()``).
+    if "pytest" in sys.modules:
+        return
+    # Flask debug reloader parent: skip (child has WERKZEUG_RUN_MAIN=true).
+    # Plain gunicorn / non-reloader imports leave the var unset — still start.
+    if (
+        os.environ.get("WERKZEUG_SERVER_FD")
+        and os.environ.get("WERKZEUG_RUN_MAIN") != "true"
+    ):
+        return
+    with _scan_worker_lock:
+        if _scan_worker_started:
+            return
+        _scan_worker_started = True
+        _scan_worker_stop.clear()
+        thread = threading.Thread(
+            target=_scan_worker_loop,
+            args=(app,),
+            name="scan-worker",
+            daemon=True,
+        )
+        thread.start()
+
+
 def _enqueue_scan(dossier, module, params):
     job = ScanJob(
         dossier_id=dossier.id,
@@ -474,9 +582,9 @@ def _enqueue_scan(dossier, module, params):
     db.session.commit()
     app = current_app._get_current_object()
     if app.config.get("SCAN_JOBS_EAGER"):
+        # Tests / single-process: run inline for determinism.
         _execute_scan_job(app, job.id)
-    else:
-        _scan_executor.submit(_execute_scan_job, app, job.id)
+    # Otherwise the durable DB poller claims the queued row.
     return job
 
 

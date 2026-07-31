@@ -37,12 +37,14 @@ Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk un
 - Dossier report export (`modules/export.py`) is a pure renderer; the report dict is
   assembled in `app.py:_build_report` from DB metadata (incl. notes/tags) plus on-disk
   recon summaries. Add new sections in both places.
-- Recon runs are asynchronous: routes enqueue a `ScanJob` and return immediately; a
-  `ThreadPoolExecutor` (`_scan_executor` in `app.py`) runs `_execute_scan_job` in a
-  background thread with its own app context. The overview page auto-refreshes (meta
-  refresh) only while a job is pending. Set `SCAN_JOBS_EAGER=true` (or the config key)
-  to run jobs inline — tests rely on this for determinism. Note: the in-process worker
-  is per-process; a multi-worker/gunicorn deployment would need a shared queue.
+- Recon runs are asynchronous: routes insert a `ScanJob` (`queued`) and return
+  immediately. A durable in-process poller (`_scan_worker_loop` in `app.py`) claims
+  jobs from the DB and runs `_execute_scan_job`. On startup it reclaims orphaned
+  `running` rows back to `queued` so a crash/restart does not lose work. The
+  overview page auto-refreshes only while a job is pending. Set `SCAN_JOBS_EAGER=true`
+  to run jobs inline (tests rely on this). Disable the poller with
+  `SCAN_WORKER_ENABLED=false`. Multi-process gunicorn: each process may run a poller;
+  claim uses a conditional UPDATE so only one worker wins a given job.
 - Lint rules are pinned in `ruff.toml` (`select = ["E4","E7","E9","F"]`) so results are
   stable across ruff versions (newer ruff broadened its defaults and flagged the
   pre-existing recon modules). Keep this file; the update script installs ruff unpinned.

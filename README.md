@@ -21,7 +21,7 @@ Security researchers and pentesters spend the first hour of any engagement runni
 - WHOIS lookup: domain registration data, registrar, nameservers, expiry
 - nmap scanning: port scan with service detection and open-port summary
 - OSINT modules: social media search, email enumeration, breach check, GitHub info
-- Async scans: recon runs are queued to a background worker (non-blocking) with a live Scan Jobs status panel
+- Async scans: recon runs are queued as durable `ScanJob` rows; an in-process poller claims them (survives restarts) with a live Scan Jobs status panel
 - Notes & tags: attach investigator notes and categorize dossiers with tags
 - Search: filter dossiers by name, organization, or tag from the dashboard
 - Dossier management: create, edit metadata, browse, export, and delete target profiles via web UI
@@ -60,7 +60,9 @@ cp .env.example .env
 | `SECRET_KEY` | yes | Random string used to sign Flask sessions |
 | `DATABASE_URL` | no | SQLAlchemy database URL (defaults to SQLite under `instance/`). Use `postgresql://...` for Postgres |
 | `DOSSIER_DATA_DIR` | no | Directory for recon artifacts (defaults to `instance/dossier_data`) |
-| `SCAN_JOBS_EAGER` | no | If `true`, run scans inline instead of on the background worker (useful for single-process setups) |
+| `SCAN_JOBS_EAGER` | no | If `true`, run scans inline instead of on the durable DB poller (tests use this) |
+| `SCAN_WORKER_ENABLED` | no | If `false`, do not start the background poller (jobs stay `queued` until processed) |
+| `SCAN_WORKER_POLL_SECONDS` | no | Poll interval for the durable scan worker (default `0.5`) |
 | `GITHUB_TOKEN` | no | GitHub PAT for higher API rate limits (used in GitHub lookups) |
 | `NMAP_PATH` | no | Absolute path to `nmap` if not on `$PATH` |
 
