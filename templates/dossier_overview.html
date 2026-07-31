@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ overview.name }} - DossierForge{% endblock %}
+{% block head %}{% if pending_jobs %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
 {% block content %}
     <div class="d-flex justify-content-between align-items-start mb-3">
         <h1 class="h3 mb-0">
@@ -90,6 +91,40 @@
                         </ul>
                     {% else %}
                         <p class="text-muted mb-0">No notes yet.</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Scan Jobs</h5>
+                    {% if pending_jobs %}<span class="badge bg-warning text-dark">refreshing…</span>{% endif %}
+                </div>
+                <div class="card-body">
+                    {% if scan_jobs %}
+                        <ul class="list-group list-group-flush">
+                            {% for job in scan_jobs %}
+                            <li class="list-group-item">
+                                <div class="d-flex justify-content-between">
+                                    <span>
+                                        <code>{{ job.module }}</code> {{ job.params }}
+                                    </span>
+                                    {% if job.status == 'success' %}
+                                        <span class="badge bg-success">success</span>
+                                    {% elif job.status == 'error' %}
+                                        <span class="badge bg-danger">error</span>
+                                    {% elif job.status == 'running' %}
+                                        <span class="badge bg-primary">running</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">queued</span>
+                                    {% endif %}
+                                </div>
+                                {% if job.message %}<div class="small text-muted">{{ job.message }}</div>{% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="text-muted mb-0">No scans run yet.</p>
                     {% endif %}
                 </div>
             </div>

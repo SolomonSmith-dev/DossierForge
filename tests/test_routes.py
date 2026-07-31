@@ -7,7 +7,7 @@ offline breach-check module so no network or system binaries are required.
 
 from conftest import register
 
-from models import AuditLog, Dossier, DossierShare, Note, Tag, User, db
+from models import AuditLog, Dossier, DossierShare, Note, ScanJob, Tag, User, db
 
 
 def test_index_requires_login(client):
@@ -74,11 +74,14 @@ def test_run_breach_module_records_audit(client, app):
         follow_redirects=True,
     )
     assert resp.status_code == 200
-    assert b"Breach check completed" in resp.data
+    assert b"Queued breach check" in resp.data
     with app.app_context():
         logs = db.session.query(AuditLog).filter_by(action="run_breach").all()
         assert len(logs) == 1
         assert logs[0].detail == "demo@example.com"
+        job = db.session.query(ScanJob).filter_by(module="breach").one()
+        assert job.status == "success"
+        assert "demo@example.com" in job.message
 
 
 def test_overview_returns_200_for_owner(client, app):
@@ -210,7 +213,7 @@ def test_editor_can_run_modules_but_not_delete(app):
         follow_redirects=True,
     )
     assert resp.status_code == 200
-    assert b"Breach check completed" in resp.data
+    assert b"Queued breach check" in resp.data
     # Editor still cannot delete.
     assert editor.post(f"/dossier/{dossier_id}/delete").status_code == 404
 
@@ -284,6 +287,23 @@ def test_add_tag_dedupes_and_powers_search(client, app):
     # Search by tag returns the dossier; a non-matching query does not.
     assert b"Acme" in client.get("/?q=phish").data
     assert b"Acme" not in client.get("/?q=zzzzz").data
+
+
+def test_scan_job_recorded_and_shown_on_overview(client, app):
+    register(client)
+    dossier_id = _make_dossier(client, app, name="Acme")
+    client.post(
+        f"/dossier/{dossier_id}/osint/breach", data={"email": "demo@example.com"}
+    )
+    with app.app_context():
+        job = db.session.query(ScanJob).one()
+        assert job.module == "breach"
+        assert job.status == "success"
+        assert job.finished_at is not None
+    # The Scan Jobs panel surfaces the completed job.
+    page = client.get(f"/dossier/{dossier_id}").data
+    assert b"Scan Jobs" in page
+    assert b"success" in page
 
 
 def test_notes_and_tags_in_export(client, app):

@@ -8,12 +8,14 @@ audit trail. Dossiers are isolated per user account.
 import json
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from flask import (
     Flask,
     Response,
     abort,
+    current_app,
     flash,
     redirect,
     render_template,
@@ -28,7 +30,7 @@ from flask_login import (
     logout_user,
 )
 
-from models import AuditLog, Dossier, DossierShare, Note, Tag, User, db
+from models import AuditLog, Dossier, DossierShare, Note, ScanJob, Tag, User, db
 from modules.export import render_json, render_markdown
 from modules.nmap import get_nmap_summary, get_open_ports, run_nmap_scan
 from modules.osint import (
@@ -41,6 +43,9 @@ from modules.osint import (
 from modules.whois import get_whois_summary, run_whois
 
 login_manager = LoginManager()
+# Background worker for recon jobs. Small pool: recon is I/O-bound and we want
+# the request thread to return immediately instead of blocking on a slow scan.
+_scan_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scan")
 
 
 def _normalize_db_uri(uri):
@@ -65,6 +70,10 @@ def create_app(config=None):
         DOSSIER_DATA_DIR=os.environ.get(
             "DOSSIER_DATA_DIR", os.path.join(app.instance_path, "dossier_data")
         ),
+        # When True, scan jobs run inline (synchronously) instead of on the
+        # background worker. Useful for tests and simple single-process setups.
+        SCAN_JOBS_EAGER=os.environ.get("SCAN_JOBS_EAGER", "").lower()
+        in ("1", "true", "yes"),
     )
     if config:
         app.config.update(config)
@@ -192,6 +201,103 @@ def _audit(action, dossier_id=None, detail=""):
         )
     )
     db.session.commit()
+
+
+def _dispatch_scan(job, target_dir):
+    """Run the recon module for a job and return a human-readable message.
+
+    Raises on failure so the caller can mark the job as errored.
+    """
+    module = job.module
+    params = job.params or ""
+    if module == "whois":
+        result = run_whois(params, target_dir)
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(result["error"])
+        lists = _load_lists(target_dir)
+        if params not in lists["domains"]:
+            lists["domains"].append(params)
+            _save_lists(target_dir, lists)
+        return f"WHOIS completed for {params}"
+    if module == "nmap":
+        scan_type, _, target = params.partition("|")
+        scan_type = scan_type or "basic"
+        result = run_nmap_scan(target, target_dir, scan_type)
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(result["error"])
+        lists = _load_lists(target_dir)
+        if target.replace(".", "").replace(":", "").isdigit() or ":" in target:
+            if target not in lists["ip_addresses"]:
+                lists["ip_addresses"].append(target)
+        elif target not in lists["domains"]:
+            lists["domains"].append(target)
+        _save_lists(target_dir, lists)
+        return f"Nmap {scan_type} scan completed for {target}"
+    if module == "social":
+        search_social_media(params, target_dir)
+        return f"Social media search completed for {params}"
+    if module == "emails":
+        result = search_emails(params, target_dir)
+        lists = _load_lists(target_dir)
+        for email in result.get("emails", []):
+            if email not in lists["emails"]:
+                lists["emails"].append(email)
+        _save_lists(target_dir, lists)
+        return f"Email search completed for {params}"
+    if module == "breach":
+        check_breach_data(params, target_dir)
+        return f"Breach check completed for {params}"
+    if module == "github":
+        search_github_info(params, target_dir)
+        return f"GitHub search completed for {params}"
+    raise RuntimeError(f"Unknown module: {module}")
+
+
+def _execute_scan_job(app, job_id):
+    """Worker entrypoint: runs in a background thread with its own app context."""
+    with app.app_context():
+        job = db.session.get(ScanJob, job_id)
+        if job is None:
+            return
+        job.status = ScanJob.STATUS_RUNNING
+        job.started_at = datetime.now(timezone.utc)
+        db.session.commit()
+        target_dir = os.path.join(app.config["DOSSIER_DATA_DIR"], str(job.dossier_id))
+        os.makedirs(target_dir, exist_ok=True)
+        try:
+            job.message = _dispatch_scan(job, target_dir)
+            job.status = ScanJob.STATUS_SUCCESS
+        except Exception as exc:  # noqa: BLE001 - record any failure on the job
+            job.status = ScanJob.STATUS_ERROR
+            job.message = str(exc)[:1024]
+        job.finished_at = datetime.now(timezone.utc)
+        db.session.add(
+            AuditLog(
+                user_id=job.user_id,
+                dossier_id=job.dossier_id,
+                action=f"run_{job.module}",
+                detail=(job.params or "")[:512],
+            )
+        )
+        db.session.commit()
+
+
+def _enqueue_scan(dossier, module, params):
+    job = ScanJob(
+        dossier_id=dossier.id,
+        user_id=current_user.id,
+        module=module,
+        params=params,
+        status=ScanJob.STATUS_QUEUED,
+    )
+    db.session.add(job)
+    db.session.commit()
+    app = current_app._get_current_object()
+    if app.config.get("SCAN_JOBS_EAGER"):
+        _execute_scan_job(app, job.id)
+    else:
+        _scan_executor.submit(_execute_scan_job, app, job.id)
+    return job
 
 
 def register_routes(app):
@@ -335,6 +441,8 @@ def register_routes(app):
             collaborators=dossier.shares if role == "owner" else None,
             notes=dossier.notes,
             tags=dossier.tags,
+            scan_jobs=dossier.scan_jobs,
+            pending_jobs=any(j.is_pending for j in dossier.scan_jobs),
             whois_summary=get_whois_summary(target_dir),
             nmap_summary=get_nmap_summary(target_dir),
             open_ports=get_open_ports(target_dir),
@@ -495,131 +603,85 @@ def register_routes(app):
         flash(f"Removed tag '{name}'", "success")
         return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
-    # ------------------------------------------------------------- modules
+    # ----------------------------------------------- recon modules (async)
+    def _queue_and_redirect(dossier, module, params, label):
+        _enqueue_scan(dossier, module, params)
+        flash(f"Queued {label}", "success")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
     @app.route("/dossier/<int:dossier_id>/whois", methods=["POST"])
     @login_required
     def run_whois_query(dossier_id):
         dossier, _role = _get_dossier_access(dossier_id, "edit")
-        target_dir = _dossier_data_dir(dossier.id)
         domain = request.form.get("domain")
         if not domain:
             flash("Domain is required", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        try:
-            result = run_whois(domain, target_dir)
-            if "error" in result:
-                flash(f"WHOIS query failed: {result['error']}", "error")
-            else:
-                flash(f"WHOIS query completed for {domain}", "success")
-                lists = _load_lists(target_dir)
-                if domain not in lists["domains"]:
-                    lists["domains"].append(domain)
-                _save_lists(target_dir, lists)
-            _audit("run_whois", dossier_id=dossier.id, detail=domain)
-        except Exception as e:
-            flash(f"WHOIS query failed: {str(e)}", "error")
-        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return _queue_and_redirect(dossier, "whois", domain, f"WHOIS for {domain}")
 
     @app.route("/dossier/<int:dossier_id>/nmap", methods=["POST"])
     @login_required
     def run_nmap_scan_route(dossier_id):
         dossier, _role = _get_dossier_access(dossier_id, "edit")
-        target_dir = _dossier_data_dir(dossier.id)
         target = request.form.get("target")
         scan_type = request.form.get("scan_type", "basic")
         if not target:
             flash("Target is required", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        try:
-            result = run_nmap_scan(target, target_dir, scan_type)
-            if "error" in result:
-                flash(f"Nmap scan failed: {result['error']}", "error")
-            else:
-                flash(f"Nmap {scan_type} scan completed for {target}", "success")
-                lists = _load_lists(target_dir)
-                if target.replace(".", "").replace(":", "").isdigit() or ":" in target:
-                    if target not in lists["ip_addresses"]:
-                        lists["ip_addresses"].append(target)
-                elif target not in lists["domains"]:
-                    lists["domains"].append(target)
-                _save_lists(target_dir, lists)
-            _audit("run_nmap", dossier_id=dossier.id, detail=f"{scan_type}:{target}")
-        except Exception as e:
-            flash(f"Nmap scan failed: {str(e)}", "error")
-        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return _queue_and_redirect(
+            dossier,
+            "nmap",
+            f"{scan_type}|{target}",
+            f"nmap {scan_type} scan for {target}",
+        )
 
     @app.route("/dossier/<int:dossier_id>/osint/social", methods=["POST"])
     @login_required
     def run_social_media_search(dossier_id):
         dossier, _role = _get_dossier_access(dossier_id, "edit")
-        target_dir = _dossier_data_dir(dossier.id)
         target = request.form.get("target")
         if not target:
             flash("Target is required", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        try:
-            search_social_media(target, target_dir)
-            flash(f"Social media search completed for {target}", "success")
-            _audit("run_social", dossier_id=dossier.id, detail=target)
-        except Exception as e:
-            flash(f"Social media search failed: {str(e)}", "error")
-        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return _queue_and_redirect(
+            dossier, "social", target, f"social media search for {target}"
+        )
 
     @app.route("/dossier/<int:dossier_id>/osint/emails", methods=["POST"])
     @login_required
     def run_email_search(dossier_id):
         dossier, _role = _get_dossier_access(dossier_id, "edit")
-        target_dir = _dossier_data_dir(dossier.id)
         domain = request.form.get("domain")
         if not domain:
             flash("Domain is required", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        try:
-            result = search_emails(domain, target_dir)
-            flash(f"Email search completed for {domain}", "success")
-            lists = _load_lists(target_dir)
-            for email in result.get("emails", []):
-                if email not in lists["emails"]:
-                    lists["emails"].append(email)
-            _save_lists(target_dir, lists)
-            _audit("run_emails", dossier_id=dossier.id, detail=domain)
-        except Exception as e:
-            flash(f"Email search failed: {str(e)}", "error")
-        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return _queue_and_redirect(
+            dossier, "emails", domain, f"email search for {domain}"
+        )
 
     @app.route("/dossier/<int:dossier_id>/osint/breach", methods=["POST"])
     @login_required
     def run_breach_check(dossier_id):
         dossier, _role = _get_dossier_access(dossier_id, "edit")
-        target_dir = _dossier_data_dir(dossier.id)
         email = request.form.get("email")
         if not email:
             flash("Email is required", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        try:
-            check_breach_data(email, target_dir)
-            flash(f"Breach check completed for {email}", "success")
-            _audit("run_breach", dossier_id=dossier.id, detail=email)
-        except Exception as e:
-            flash(f"Breach check failed: {str(e)}", "error")
-        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return _queue_and_redirect(
+            dossier, "breach", email, f"breach check for {email}"
+        )
 
     @app.route("/dossier/<int:dossier_id>/osint/github", methods=["POST"])
     @login_required
     def run_github_search(dossier_id):
         dossier, _role = _get_dossier_access(dossier_id, "edit")
-        target_dir = _dossier_data_dir(dossier.id)
         username = request.form.get("username")
         if not username:
             flash("Username is required", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        try:
-            search_github_info(username, target_dir)
-            flash(f"GitHub search completed for {username}", "success")
-            _audit("run_github", dossier_id=dossier.id, detail=username)
-        except Exception as e:
-            flash(f"GitHub search failed: {str(e)}", "error")
-        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        return _queue_and_redirect(
+            dossier, "github", username, f"GitHub search for {username}"
+        )
 
 
 app = create_app()

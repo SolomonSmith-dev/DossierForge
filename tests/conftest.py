@@ -22,6 +22,8 @@ def app(tmp_path):
             "SECRET_KEY": "test-secret",
             "SQLALCHEMY_DATABASE_URI": "sqlite:///" + str(tmp_path / "test.db"),
             "DOSSIER_DATA_DIR": str(tmp_path / "data"),
+            # Run scan jobs inline so tests are deterministic (no worker thread).
+            "SCAN_JOBS_EAGER": True,
         }
     )
     os.makedirs(application.config["DOSSIER_DATA_DIR"], exist_ok=True)

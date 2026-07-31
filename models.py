@@ -80,6 +80,12 @@ class Dossier(db.Model):
         cascade="all, delete-orphan",
         order_by="Tag.name",
     )
+    scan_jobs = db.relationship(
+        "ScanJob",
+        back_populates="dossier",
+        cascade="all, delete-orphan",
+        order_by="ScanJob.created_at.desc()",
+    )
 
 
 class DossierShare(db.Model):
@@ -140,6 +146,37 @@ class Tag(db.Model):
     created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
 
     dossier = db.relationship("Dossier", back_populates="tags")
+
+
+class ScanJob(db.Model):
+    """An asynchronous recon run (WHOIS/nmap/OSINT) against a dossier."""
+
+    __tablename__ = "scan_jobs"
+
+    STATUS_QUEUED = "queued"
+    STATUS_RUNNING = "running"
+    STATUS_SUCCESS = "success"
+    STATUS_ERROR = "error"
+    PENDING_STATUSES = (STATUS_QUEUED, STATUS_RUNNING)
+
+    id = db.Column(db.Integer, primary_key=True)
+    dossier_id = db.Column(
+        db.Integer, db.ForeignKey("dossiers.id"), nullable=False, index=True
+    )
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    module = db.Column(db.String(32), nullable=False)
+    params = db.Column(db.String(512), default="")
+    status = db.Column(db.String(16), default=STATUS_QUEUED, nullable=False)
+    message = db.Column(db.String(1024), default="")
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+    started_at = db.Column(db.DateTime, nullable=True)
+    finished_at = db.Column(db.DateTime, nullable=True)
+
+    dossier = db.relationship("Dossier", back_populates="scan_jobs")
+
+    @property
+    def is_pending(self):
+        return self.status in self.PENDING_STATUSES
 
 
 class AuditLog(db.Model):
