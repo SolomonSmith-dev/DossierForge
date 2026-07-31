@@ -25,8 +25,11 @@ Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk un
 - Access control: use `_get_dossier_access(dossier_id, need=...)` in `app.py` for all
   dossier routes. `need` is `"view"` (owner or any collaborator), `"edit"` (owner or
   editor collaborator; recon/module routes), or `"owner"` (owner-only; delete/share).
-  It returns `(dossier, role)`; no-access is 404 and insufficient-role is 403.
-  Sharing is modeled by `DossierShare` (viewer/editor).
+  It returns `(dossier, role)`; no-access is 404 and insufficient-role is 403. A user's
+  effective non-owner role (`_effective_shared_role`) is the best of any direct
+  `DossierShare` and any `DossierOrgAccess` for orgs they belong to (editor beats
+  viewer). Organizations (`Organization`/`OrgMembership`) grant team-wide access;
+  use `_get_org_membership(org_id, need_admin=...)` for org routes.
 - `db.create_all()` on startup adds *new* tables (e.g. `dossier_shares`, `notes`,
   `tags`) but never alters existing ones. Adding a column to an existing model requires
   deleting the dev DB (`instance/dossierforge.db`) or introducing migrations. Because
