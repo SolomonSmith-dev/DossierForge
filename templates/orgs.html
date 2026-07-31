@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Organizations - DossierForge{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Organizations</h1>
+
+<ul class="list-group mb-4">
+    {% for membership in memberships %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+            <a href="{{ url_for('org_detail', org_id=membership.organization.id) }}">{{ membership.organization.name }}</a>
+            <span class="badge bg-info text-dark">{{ membership.role }}</span>
+        </li>
+    {% else %}
+        <li class="list-group-item text-muted">You are not a member of any organization yet.</li>
+    {% endfor %}
+</ul>
+
+<div class="card">
+    <div class="card-header"><h5 class="mb-0">Create an organization</h5></div>
+    <div class="card-body">
+        <form method="post" action="{{ url_for('create_org') }}" class="row g-2">
+            <div class="col-sm-9">
+                <input type="text" class="form-control" name="name" placeholder="Organization name" required>
+            </div>
+            <div class="col-sm-3">
+                <button type="submit" class="btn btn-primary w-100">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

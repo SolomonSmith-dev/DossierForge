@@ -13,6 +13,7 @@
             <a class="navbar-brand" href="{{ url_for('index') }}">DossierForge</a>
             <div class="d-flex align-items-center">
                 {% if current_user.is_authenticated %}
+                    <a href="{{ url_for('orgs') }}" class="btn btn-outline-light btn-sm me-3">Organizations</a>
                     <span class="navbar-text text-light me-3">{{ current_user.email }}</span>
                     <form method="post" action="{{ url_for('logout') }}" class="d-inline">
                         <button type="submit" class="btn btn-outline-light btn-sm">Sign out</button>

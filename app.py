@@ -30,7 +30,19 @@ from flask_login import (
     logout_user,
 )
 
-from models import AuditLog, Dossier, DossierShare, Note, ScanJob, Tag, User, db
+from models import (
+    AuditLog,
+    Dossier,
+    DossierOrgAccess,
+    DossierShare,
+    Note,
+    Organization,
+    OrgMembership,
+    ScanJob,
+    Tag,
+    User,
+    db,
+)
 from modules.export import render_json, render_markdown
 from modules.nmap import get_nmap_summary, get_open_ports, run_nmap_scan
 from modules.osint import (
@@ -123,10 +135,69 @@ def _save_lists(target_dir, data):
         json.dump(data, f, indent=2)
 
 
+def _user_org_ids(user_id):
+    return [
+        m.org_id
+        for m in db.session.query(OrgMembership).filter_by(user_id=user_id).all()
+    ]
+
+
+def _my_memberships():
+    return db.session.query(OrgMembership).filter_by(user_id=current_user.id).all()
+
+
+def _effective_shared_role(dossier, user_id):
+    """Best role a non-owner user has on a dossier via direct or org shares.
+
+    Returns "editor", "viewer", or None. Editor beats viewer when both apply.
+    """
+    roles = set()
+    share = (
+        db.session.query(DossierShare)
+        .filter_by(dossier_id=dossier.id, user_id=user_id)
+        .first()
+    )
+    if share is not None:
+        roles.add(share.role)
+    org_ids = _user_org_ids(user_id)
+    if org_ids:
+        for access in (
+            db.session.query(DossierOrgAccess)
+            .filter(
+                DossierOrgAccess.dossier_id == dossier.id,
+                DossierOrgAccess.org_id.in_(org_ids),
+            )
+            .all()
+        ):
+            roles.add(access.role)
+    if not roles:
+        return None
+    return "editor" if DossierShare.ROLE_EDITOR in roles else "viewer"
+
+
+def _get_org_membership(org_id, need_admin=False):
+    """Return (org, membership) enforcing that current_user belongs to the org."""
+    org = db.session.get(Organization, org_id)
+    if org is None:
+        abort(404)
+    membership = (
+        db.session.query(OrgMembership)
+        .filter_by(org_id=org_id, user_id=current_user.id)
+        .first()
+    )
+    if membership is None:
+        abort(404)
+    if need_admin and membership.role != OrgMembership.ROLE_ADMIN:
+        abort(403)
+    return org, membership
+
+
 def _get_dossier_access(dossier_id, need="view"):
     """Return (dossier, role) enforcing access.
 
-    role is "owner", "editor", or "viewer". `need` is one of:
+    role is "owner", "editor", or "viewer". Access can come from ownership, a
+    direct share, or membership in an organization the dossier is shared with.
+    `need` is one of:
       - "view":  owner or any collaborator
       - "edit":  owner or editor collaborator
       - "owner": owner only
@@ -139,16 +210,12 @@ def _get_dossier_access(dossier_id, need="view"):
         return dossier, "owner"
     if need == "owner":
         abort(404)
-    share = (
-        db.session.query(DossierShare)
-        .filter_by(dossier_id=dossier_id, user_id=current_user.id)
-        .first()
-    )
-    if share is None:
+    role = _effective_shared_role(dossier, current_user.id)
+    if role is None:
         abort(404)
-    if need == "edit" and share.role != DossierShare.ROLE_EDITOR:
+    if need == "edit" and role != DossierShare.ROLE_EDITOR:
         abort(403)
-    return dossier, share.role
+    return dossier, role
 
 
 def _build_report(dossier, target_dir):
@@ -373,15 +440,36 @@ def register_routes(app):
             .all()
             if matches(d)
         ]
-        shared = [
-            (d, role)
-            for d, role in db.session.query(Dossier, DossierShare.role)
+        # Combine direct shares and organization shares, deduped by dossier
+        # (editor beats viewer when a dossier is reachable both ways).
+        shared_map = {}
+        for d, role in (
+            db.session.query(Dossier, DossierShare.role)
             .join(DossierShare, DossierShare.dossier_id == Dossier.id)
             .filter(DossierShare.user_id == current_user.id)
-            .order_by(Dossier.created_at.desc())
             .all()
-            if matches(d)
-        ]
+        ):
+            shared_map[d.id] = [d, role]
+        org_ids = _user_org_ids(current_user.id)
+        if org_ids:
+            for d, role in (
+                db.session.query(Dossier, DossierOrgAccess.role)
+                .join(DossierOrgAccess, DossierOrgAccess.dossier_id == Dossier.id)
+                .filter(DossierOrgAccess.org_id.in_(org_ids))
+                .all()
+            ):
+                if d.owner_id == current_user.id:
+                    continue
+                if d.id in shared_map:
+                    if role == DossierShare.ROLE_EDITOR:
+                        shared_map[d.id][1] = DossierShare.ROLE_EDITOR
+                else:
+                    shared_map[d.id] = [d, role]
+        shared = sorted(
+            ((d, role) for d, role in shared_map.values() if matches(d)),
+            key=lambda pair: pair[0].created_at,
+            reverse=True,
+        )
         return render_template(
             "index.html", dossiers=dossiers, shared=shared, query=query
         )
@@ -439,6 +527,10 @@ def register_routes(app):
             role=role,
             can_edit=role in ("owner", "editor"),
             collaborators=dossier.shares if role == "owner" else None,
+            my_orgs=(
+                [m.organization for m in _my_memberships()] if role == "owner" else None
+            ),
+            org_shares=dossier.org_access if role == "owner" else None,
             notes=dossier.notes,
             tags=dossier.tags,
             scan_jobs=dossier.scan_jobs,
@@ -533,6 +625,155 @@ def register_routes(app):
         db.session.commit()
         _audit("unshare_dossier", dossier_id=dossier.id, detail=email)
         flash(f"Removed {email}", "success")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    # ------------------------------------------------------ organizations
+    @app.route("/orgs")
+    @login_required
+    def orgs():
+        memberships = (
+            db.session.query(OrgMembership).filter_by(user_id=current_user.id).all()
+        )
+        return render_template("orgs.html", memberships=memberships)
+
+    @app.route("/orgs", methods=["POST"])
+    @login_required
+    def create_org():
+        name = (request.form.get("name") or "").strip()
+        if not name:
+            flash("Organization name is required", "error")
+            return redirect(url_for("orgs"))
+        org = Organization(name=name)
+        db.session.add(org)
+        db.session.flush()
+        db.session.add(
+            OrgMembership(
+                org_id=org.id,
+                user_id=current_user.id,
+                role=OrgMembership.ROLE_ADMIN,
+            )
+        )
+        db.session.commit()
+        _audit("create_org", detail=name)
+        flash(f"Created organization '{name}'", "success")
+        return redirect(url_for("org_detail", org_id=org.id))
+
+    @app.route("/orgs/<int:org_id>")
+    @login_required
+    def org_detail(org_id):
+        org, membership = _get_org_membership(org_id)
+        shared_dossiers = (
+            db.session.query(Dossier, DossierOrgAccess.role)
+            .join(DossierOrgAccess, DossierOrgAccess.dossier_id == Dossier.id)
+            .filter(DossierOrgAccess.org_id == org.id)
+            .all()
+        )
+        return render_template(
+            "org_detail.html",
+            org=org,
+            membership=membership,
+            is_admin=membership.role == OrgMembership.ROLE_ADMIN,
+            shared_dossiers=shared_dossiers,
+        )
+
+    @app.route("/orgs/<int:org_id>/members", methods=["POST"])
+    @login_required
+    def add_org_member(org_id):
+        org, _membership = _get_org_membership(org_id, need_admin=True)
+        email = (request.form.get("email") or "").strip().lower()
+        role = request.form.get("role", OrgMembership.ROLE_MEMBER)
+        if role not in (OrgMembership.ROLE_ADMIN, OrgMembership.ROLE_MEMBER):
+            role = OrgMembership.ROLE_MEMBER
+        if not email:
+            flash("Member email is required", "error")
+            return redirect(url_for("org_detail", org_id=org.id))
+        user = db.session.query(User).filter_by(email=email).first()
+        if user is None:
+            flash(f"No account found for {email}", "error")
+            return redirect(url_for("org_detail", org_id=org.id))
+        existing = (
+            db.session.query(OrgMembership)
+            .filter_by(org_id=org.id, user_id=user.id)
+            .first()
+        )
+        if existing:
+            existing.role = role
+            flash(f"Updated {email} to {role}", "success")
+        else:
+            db.session.add(OrgMembership(org_id=org.id, user_id=user.id, role=role))
+            flash(f"Added {email} as {role}", "success")
+        db.session.commit()
+        _audit("add_org_member", detail=f"{org.name}:{email}:{role}")
+        return redirect(url_for("org_detail", org_id=org.id))
+
+    @app.route("/orgs/<int:org_id>/members/<int:user_id>/remove", methods=["POST"])
+    @login_required
+    def remove_org_member(org_id, user_id):
+        org, _membership = _get_org_membership(org_id, need_admin=True)
+        target = (
+            db.session.query(OrgMembership)
+            .filter_by(org_id=org.id, user_id=user_id)
+            .first()
+        )
+        if target is None:
+            abort(404)
+        admin_count = (
+            db.session.query(OrgMembership)
+            .filter_by(org_id=org.id, role=OrgMembership.ROLE_ADMIN)
+            .count()
+        )
+        if target.role == OrgMembership.ROLE_ADMIN and admin_count <= 1:
+            flash("Cannot remove the last admin", "error")
+            return redirect(url_for("org_detail", org_id=org.id))
+        email = target.user.email
+        db.session.delete(target)
+        db.session.commit()
+        _audit("remove_org_member", detail=f"{org.name}:{email}")
+        flash(f"Removed {email} from {org.name}", "success")
+        return redirect(url_for("org_detail", org_id=org.id))
+
+    @app.route("/dossier/<int:dossier_id>/org-share", methods=["POST"])
+    @login_required
+    def org_share_dossier(dossier_id):
+        dossier, _role = _get_dossier_access(dossier_id, "owner")
+        org_id = request.form.get("org_id")
+        role = request.form.get("role", "viewer")
+        if role not in (DossierShare.ROLE_VIEWER, DossierShare.ROLE_EDITOR):
+            role = DossierShare.ROLE_VIEWER
+        org, _membership = _get_org_membership(int(org_id)) if org_id else (None, None)
+        if org is None:
+            flash("Select one of your organizations", "error")
+            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+        access = (
+            db.session.query(DossierOrgAccess)
+            .filter_by(dossier_id=dossier.id, org_id=org.id)
+            .first()
+        )
+        if access:
+            access.role = role
+            flash(f"Updated {org.name} to {role}", "success")
+        else:
+            db.session.add(
+                DossierOrgAccess(dossier_id=dossier.id, org_id=org.id, role=role)
+            )
+            flash(f"Shared with {org.name} as {role}", "success")
+        db.session.commit()
+        _audit("org_share_dossier", dossier_id=dossier.id, detail=f"{org.name}:{role}")
+        return redirect(url_for("dossier_overview", dossier_id=dossier.id))
+
+    @app.route("/dossier/<int:dossier_id>/org-unshare", methods=["POST"])
+    @login_required
+    def org_unshare_dossier(dossier_id):
+        dossier, _role = _get_dossier_access(dossier_id, "owner")
+        access_id = request.form.get("access_id")
+        access = db.session.get(DossierOrgAccess, int(access_id)) if access_id else None
+        if access is None or access.dossier_id != dossier.id:
+            abort(404)
+        org_name = access.organization.name
+        db.session.delete(access)
+        db.session.commit()
+        _audit("org_unshare_dossier", dossier_id=dossier.id, detail=org_name)
+        flash(f"Removed {org_name}", "success")
         return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
     # --------------------------------------------------------- notes & tags

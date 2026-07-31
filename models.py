@@ -86,6 +86,11 @@ class Dossier(db.Model):
         cascade="all, delete-orphan",
         order_by="ScanJob.created_at.desc()",
     )
+    org_access = db.relationship(
+        "DossierOrgAccess",
+        back_populates="dossier",
+        cascade="all, delete-orphan",
+    )
 
 
 class DossierShare(db.Model):
@@ -177,6 +182,70 @@ class ScanJob(db.Model):
     @property
     def is_pending(self):
         return self.status in self.PENDING_STATUSES
+
+
+class Organization(db.Model):
+    """A team workspace. Members can be granted access to shared dossiers."""
+
+    __tablename__ = "organizations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+
+    memberships = db.relationship(
+        "OrgMembership", back_populates="organization", cascade="all, delete-orphan"
+    )
+    dossier_access = db.relationship(
+        "DossierOrgAccess",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+
+class OrgMembership(db.Model):
+    __tablename__ = "org_memberships"
+    __table_args__ = (
+        db.UniqueConstraint("org_id", "user_id", name="uq_membership_org_user"),
+    )
+
+    ROLE_ADMIN = "admin"
+    ROLE_MEMBER = "member"
+
+    id = db.Column(db.Integer, primary_key=True)
+    org_id = db.Column(
+        db.Integer, db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    role = db.Column(db.String(16), default=ROLE_MEMBER, nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+
+    organization = db.relationship("Organization", back_populates="memberships")
+    user = db.relationship("User")
+
+
+class DossierOrgAccess(db.Model):
+    """Grants every member of an organization access to a dossier."""
+
+    __tablename__ = "dossier_org_access"
+    __table_args__ = (
+        db.UniqueConstraint("dossier_id", "org_id", name="uq_org_access_dossier_org"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    dossier_id = db.Column(
+        db.Integer, db.ForeignKey("dossiers.id"), nullable=False, index=True
+    )
+    org_id = db.Column(
+        db.Integer, db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    role = db.Column(db.String(16), default="viewer", nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+
+    organization = db.relationship("Organization", back_populates="dossier_access")
+    dossier = db.relationship("Dossier", back_populates="org_access")
 
 
 class AuditLog(db.Model):

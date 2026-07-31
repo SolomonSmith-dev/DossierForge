@@ -7,7 +7,18 @@ offline breach-check module so no network or system binaries are required.
 
 from conftest import register
 
-from models import AuditLog, Dossier, DossierShare, Note, ScanJob, Tag, User, db
+from models import (
+    AuditLog,
+    Dossier,
+    DossierShare,
+    Note,
+    Organization,
+    OrgMembership,
+    ScanJob,
+    Tag,
+    User,
+    db,
+)
 
 
 def test_index_requires_login(client):
@@ -317,3 +328,122 @@ def test_notes_and_tags_in_export(client, app):
     assert b"engagement-7" in md
     assert b"Credentials leaked on pastebin" in md
     assert b"## Notes" in md
+
+
+def _create_org(client, app, name="Acme Team"):
+    client.post("/orgs", data={"name": name})
+    with app.app_context():
+        return db.session.query(Organization).filter_by(name=name).one().id
+
+
+def test_create_org_makes_creator_admin(client, app):
+    register(client, email="owner@example.com")
+    org_id = _create_org(client, app)
+    with app.app_context():
+        m = db.session.query(OrgMembership).filter_by(org_id=org_id).one()
+        assert m.role == "admin"
+
+
+def test_org_share_grants_member_editor_access(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="Team Case")
+    org_id = _create_org(owner, app)
+
+    member = app.test_client()
+    register(member, email="member@example.com")
+
+    # Non-member cannot see the dossier.
+    assert member.get(f"/dossier/{dossier_id}").status_code == 404
+
+    owner.post(f"/orgs/{org_id}/members", data={"email": "member@example.com"})
+    owner.post(
+        f"/dossier/{dossier_id}/org-share",
+        data={"org_id": org_id, "role": "editor"},
+    )
+
+    # Member now has editor access via the org: can view and run modules.
+    assert member.get(f"/dossier/{dossier_id}").status_code == 200
+    resp = member.post(
+        f"/dossier/{dossier_id}/osint/breach",
+        data={"email": "x@y.com"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Queued breach check" in resp.data
+
+
+def test_org_viewer_role_is_read_only(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="Team Case")
+    org_id = _create_org(owner, app)
+    member = app.test_client()
+    register(member, email="member@example.com")
+    owner.post(f"/orgs/{org_id}/members", data={"email": "member@example.com"})
+    owner.post(
+        f"/dossier/{dossier_id}/org-share",
+        data={"org_id": org_id, "role": "viewer"},
+    )
+    assert member.get(f"/dossier/{dossier_id}").status_code == 200
+    assert (
+        member.post(
+            f"/dossier/{dossier_id}/osint/breach", data={"email": "x@y.com"}
+        ).status_code
+        == 403
+    )
+
+
+def test_removing_member_revokes_org_access(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="Team Case")
+    org_id = _create_org(owner, app)
+    member = app.test_client()
+    register(member, email="member@example.com")
+    owner.post(f"/orgs/{org_id}/members", data={"email": "member@example.com"})
+    owner.post(
+        f"/dossier/{dossier_id}/org-share",
+        data={"org_id": org_id, "role": "viewer"},
+    )
+    assert member.get(f"/dossier/{dossier_id}").status_code == 200
+
+    with app.app_context():
+        member_user_id = (
+            db.session.query(User).filter_by(email="member@example.com").one().id
+        )
+    owner.post(f"/orgs/{org_id}/members/{member_user_id}/remove")
+    assert member.get(f"/dossier/{dossier_id}").status_code == 404
+
+
+def test_non_admin_cannot_add_members(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    org_id = _create_org(owner, app)
+    member = app.test_client()
+    register(member, email="member@example.com")
+    owner.post(f"/orgs/{org_id}/members", data={"email": "member@example.com"})
+    # Member (non-admin) cannot add others.
+    assert (
+        member.post(
+            f"/orgs/{org_id}/members", data={"email": "someone@example.com"}
+        ).status_code
+        == 403
+    )
+
+
+def test_org_shared_dossier_on_member_dashboard(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="Team Case")
+    org_id = _create_org(owner, app)
+    member = app.test_client()
+    register(member, email="member@example.com")
+    owner.post(f"/orgs/{org_id}/members", data={"email": "member@example.com"})
+    owner.post(
+        f"/dossier/{dossier_id}/org-share",
+        data={"org_id": org_id, "role": "viewer"},
+    )
+    resp = member.get("/")
+    assert b"Shared with you" in resp.data
+    assert b"Team Case" in resp.data

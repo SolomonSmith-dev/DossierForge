@@ -183,6 +183,50 @@
                     </form>
                 </div>
             </div>
+
+            <div class="card mb-3">
+                <div class="card-header"><h5 class="mb-0">Organization access</h5></div>
+                <div class="card-body">
+                    {% if org_shares %}
+                        <ul class="list-group list-group-flush mb-3">
+                            {% for access in org_shares %}
+                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                                <span>{{ access.organization.name }} <span class="badge bg-info text-dark">{{ access.role }}</span></span>
+                                <form method="post" action="{{ url_for('org_unshare_dossier', dossier_id=dossier.id) }}">
+                                    <input type="hidden" name="access_id" value="{{ access.id }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                                </form>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p class="text-muted">Not shared with any organization.</p>
+                    {% endif %}
+                    {% if my_orgs %}
+                    <form method="post" action="{{ url_for('org_share_dossier', dossier_id=dossier.id) }}" class="row g-2">
+                        <div class="col-sm-6">
+                            <select class="form-select form-select-sm" name="org_id" required>
+                                <option value="" disabled selected>Select organization…</option>
+                                {% for org in my_orgs %}
+                                <option value="{{ org.id }}">{{ org.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-sm-3">
+                            <select class="form-select form-select-sm" name="role">
+                                <option value="viewer">Viewer</option>
+                                <option value="editor">Editor</option>
+                            </select>
+                        </div>
+                        <div class="col-sm-3">
+                            <button type="submit" class="btn btn-primary btn-sm w-100">Share</button>
+                        </div>
+                    </form>
+                    {% else %}
+                    <p class="text-muted mb-0"><a href="{{ url_for('orgs') }}">Create an organization</a> to share with a team.</p>
+                    {% endif %}
+                </div>
+            </div>
             {% endif %}
         </div>
 
