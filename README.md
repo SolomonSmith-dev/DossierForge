@@ -19,6 +19,7 @@ Security researchers and pentesters spend the first hour of any engagement runni
 - WHOIS lookup: domain registration data, registrar, nameservers, expiry
 - nmap scanning: port scan with service detection and open-port summary
 - OSINT modules: social media search, email enumeration, breach check, GitHub info
+- Async scans: recon runs are queued to a background worker (non-blocking) with a live Scan Jobs status panel
 - Notes & tags: attach investigator notes and categorize dossiers with tags
 - Search: filter dossiers by name, organization, or tag from the dashboard
 - Dossier management: create, browse, export, and delete target profiles via web UI
@@ -56,6 +57,7 @@ cp .env.example .env
 | `SECRET_KEY` | yes | Random string used to sign Flask sessions |
 | `DATABASE_URL` | no | SQLAlchemy database URL (defaults to SQLite under `instance/`). Use `postgresql://...` for Postgres |
 | `DOSSIER_DATA_DIR` | no | Directory for recon artifacts (defaults to `instance/dossier_data`) |
+| `SCAN_JOBS_EAGER` | no | If `true`, run scans inline instead of on the background worker (useful for single-process setups) |
 | `GITHUB_TOKEN` | no | GitHub PAT for higher API rate limits (used in GitHub lookups) |
 | `NMAP_PATH` | no | Absolute path to `nmap` if not on `$PATH` |
 
@@ -122,9 +124,10 @@ gunicorn "app:create_app()" --bind 0.0.0.0:5001
 - [x] Postgres-ready backend (`DATABASE_URL`)
 - [x] Dossier sharing with viewer/editor roles
 - [x] Investigator notes, tags, and dashboard search
-- [ ] Background job queue for long-running scans
+- [x] Background job queue for long-running scans
 - [ ] Organizations / team-wide dossiers
 - [ ] Database migrations (Alembic)
+- [ ] Durable job queue (Celery/RQ + Redis) for multi-worker deployments
 
 ## License
 
