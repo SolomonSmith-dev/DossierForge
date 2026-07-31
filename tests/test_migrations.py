@@ -39,5 +39,6 @@ def test_alembic_upgrade_creates_schema(tmp_path):
         "organizations",
         "org_memberships",
         "dossier_org_access",
+        "invitations",
     }
     assert expected.issubset(tables)

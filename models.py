@@ -248,6 +248,42 @@ class DossierOrgAccess(db.Model):
     dossier = db.relationship("Dossier", back_populates="org_access")
 
 
+class Invitation(db.Model):
+    """Pending invite by email for an organization or a dossier share.
+
+    Claimed automatically when the invitee registers/logs in with that email,
+    or via the token accept URL.
+    """
+
+    __tablename__ = "invitations"
+
+    KIND_ORG = "org"
+    KIND_DOSSIER = "dossier"
+    STATUS_PENDING = "pending"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_REVOKED = "revoked"
+
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    kind = db.Column(db.String(16), nullable=False)
+    role = db.Column(db.String(16), nullable=False)
+    status = db.Column(db.String(16), default=STATUS_PENDING, nullable=False)
+    org_id = db.Column(db.Integer, db.ForeignKey("organizations.id"), nullable=True)
+    dossier_id = db.Column(db.Integer, db.ForeignKey("dossiers.id"), nullable=True)
+    invited_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, default=_utcnow, nullable=False)
+    accepted_at = db.Column(db.DateTime, nullable=True)
+
+    organization = db.relationship("Organization")
+    dossier = db.relationship("Dossier")
+    invited_by = db.relationship("User")
+
+    @property
+    def is_pending(self):
+        return self.status == self.STATUS_PENDING
+
+
 class AuditLog(db.Model):
     __tablename__ = "audit_logs"
 

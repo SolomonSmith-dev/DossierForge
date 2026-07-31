@@ -11,6 +11,7 @@ from models import (
     AuditLog,
     Dossier,
     DossierShare,
+    Invitation,
     Note,
     Organization,
     OrgMembership,
@@ -237,7 +238,13 @@ def test_share_requires_existing_account(app):
         follow_redirects=True,
     )
     with app.app_context():
+        # Unknown emails become pending invitations (not an immediate share).
         assert db.session.query(DossierShare).count() == 0
+        invite = (
+            db.session.query(Invitation).filter_by(email="nobody@nowhere.com").one()
+        )
+        assert invite.status == "pending"
+        assert invite.kind == "dossier"
 
 
 def test_unshare_revokes_access(app):
@@ -491,3 +498,99 @@ def test_edit_dossier_is_owner_only(app):
     )
     with app.app_context():
         assert db.session.get(Dossier, dossier_id).name == "Shared Case"
+
+
+def test_pending_org_invite_claimed_on_register(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    org_id = _create_org(owner, app, name="Invite Co")
+    owner.post(
+        f"/orgs/{org_id}/members",
+        data={"email": "newbie@example.com", "role": "member"},
+    )
+    with app.app_context():
+        invite = (
+            db.session.query(Invitation).filter_by(email="newbie@example.com").one()
+        )
+        assert invite.status == "pending"
+        token = invite.token
+
+    newbie = app.test_client()
+    resp = register(newbie, email="newbie@example.com")
+    assert b"Accepted 1 pending invitation" in resp.data
+    with app.app_context():
+        invite = db.session.query(Invitation).filter_by(token=token).one()
+        assert invite.status == "accepted"
+        assert (
+            db.session.query(OrgMembership)
+            .filter_by(org_id=org_id)
+            .join(User)
+            .filter(User.email == "newbie@example.com")
+            .count()
+            == 1
+        )
+
+
+def test_accept_invite_via_token(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    dossier_id = _make_dossier(owner, app, name="Invite Case")
+
+    guest = app.test_client()
+    register(guest, email="guest@example.com")
+    # Manually insert a pending invite for an already-registered user so we can
+    # exercise the /invite/<token> accept path (normal invite flow applies
+    # immediately when the account already exists).
+    with app.app_context():
+        owner_id = db.session.query(User).filter_by(email="owner@example.com").one().id
+        invite = Invitation(
+            token="test-token-accept-xyz",
+            email="guest@example.com",
+            kind=Invitation.KIND_DOSSIER,
+            role="viewer",
+            dossier_id=dossier_id,
+            invited_by_id=owner_id,
+            status=Invitation.STATUS_PENDING,
+        )
+        db.session.add(invite)
+        db.session.commit()
+
+    assert guest.get("/dossier/%s" % dossier_id).status_code == 404
+    resp = guest.post("/invite/test-token-accept-xyz", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Gained viewer access" in resp.data
+    assert guest.get(f"/dossier/{dossier_id}").status_code == 200
+    with app.app_context():
+        assert (
+            db.session.query(Invitation)
+            .filter_by(token="test-token-accept-xyz")
+            .one()
+            .status
+            == "accepted"
+        )
+
+
+def test_revoke_pending_invite(app):
+    owner = app.test_client()
+    register(owner, email="owner@example.com")
+    org_id = _create_org(owner, app)
+    owner.post(
+        f"/orgs/{org_id}/members",
+        data={"email": "pending@example.com", "role": "member"},
+    )
+    with app.app_context():
+        invite_id = db.session.query(Invitation).one().id
+    owner.post(f"/invites/{invite_id}/revoke")
+    with app.app_context():
+        assert db.session.get(Invitation, invite_id).status == "revoked"
+    # Registering later should NOT join the org.
+    pending = app.test_client()
+    register(pending, email="pending@example.com")
+    with app.app_context():
+        assert (
+            db.session.query(OrgMembership)
+            .join(User)
+            .filter(User.email == "pending@example.com")
+            .count()
+            == 0
+        )

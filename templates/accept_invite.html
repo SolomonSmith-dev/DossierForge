@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Accept invitation - DossierForge{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h1 class="h4 mb-3">You're invited</h1>
+                <p>
+                    <strong>{{ invite.email }}</strong> has been invited
+                    {% if invite.kind == 'org' %}
+                        to join <strong>{{ invite.organization.name }}</strong> as <em>{{ invite.role }}</em>.
+                    {% else %}
+                        to collaborate on
+                        <strong>{{ invite.dossier.name if invite.dossier else 'a dossier' }}</strong>
+                        as <em>{{ invite.role }}</em>.
+                    {% endif %}
+                </p>
+                <p class="text-muted">Sign in or create an account with <strong>{{ invite.email }}</strong> to accept.</p>
+                <a href="{{ url_for('register') }}" class="btn btn-success">Create account</a>
+                <a href="{{ url_for('login') }}" class="btn btn-outline-primary">Sign in</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

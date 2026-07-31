@@ -179,9 +179,27 @@
                             </select>
                         </div>
                         <div class="col-sm-3">
-                            <button type="submit" class="btn btn-primary btn-sm w-100">Share</button>
+                            <button type="submit" class="btn btn-primary btn-sm w-100">Invite</button>
                         </div>
                     </form>
+                    <div class="form-text mt-2">Existing accounts get access now; new emails stay pending until they sign up.</div>
+                    {% if pending_invites %}
+                    <hr>
+                    <h6 class="small text-muted">Pending</h6>
+                    <ul class="list-group list-group-flush">
+                        {% for invite in pending_invites %}
+                        <li class="list-group-item px-0">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span>{{ invite.email }} <span class="badge bg-warning text-dark">{{ invite.role }}</span></span>
+                                <form method="post" action="{{ url_for('revoke_invite', invite_id=invite.id) }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Revoke</button>
+                                </form>
+                            </div>
+                            <div class="small text-muted"><code>{{ url_for('accept_invite', token=invite.token, _external=False) }}</code></div>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
                 </div>
             </div>
 

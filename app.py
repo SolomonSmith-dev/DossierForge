@@ -7,6 +7,7 @@ audit trail. Dossiers are isolated per user account.
 
 import json
 import os
+import secrets
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ from models import (
     Dossier,
     DossierOrgAccess,
     DossierShare,
+    Invitation,
     Note,
     Organization,
     OrgMembership,
@@ -285,6 +287,102 @@ def _audit(action, dossier_id=None, detail=""):
     db.session.commit()
 
 
+def _new_invite_token():
+    return secrets.token_urlsafe(32)
+
+
+def _apply_invitation(invite, user):
+    """Apply a pending invitation to a user. Returns a short status message."""
+    if invite.status != Invitation.STATUS_PENDING:
+        return None
+    if invite.kind == Invitation.KIND_ORG and invite.org_id:
+        existing = (
+            db.session.query(OrgMembership)
+            .filter_by(org_id=invite.org_id, user_id=user.id)
+            .first()
+        )
+        if existing:
+            existing.role = invite.role
+        else:
+            db.session.add(
+                OrgMembership(org_id=invite.org_id, user_id=user.id, role=invite.role)
+            )
+        label = invite.organization.name if invite.organization else "organization"
+        return f"Joined {label} as {invite.role}"
+    if invite.kind == Invitation.KIND_DOSSIER and invite.dossier_id:
+        if invite.dossier and invite.dossier.owner_id == user.id:
+            invite.status = Invitation.STATUS_REVOKED
+            return None
+        existing = (
+            db.session.query(DossierShare)
+            .filter_by(dossier_id=invite.dossier_id, user_id=user.id)
+            .first()
+        )
+        if existing:
+            existing.role = invite.role
+        else:
+            db.session.add(
+                DossierShare(
+                    dossier_id=invite.dossier_id, user_id=user.id, role=invite.role
+                )
+            )
+        label = invite.dossier.name if invite.dossier else "dossier"
+        return f"Gained {invite.role} access to {label}"
+    return None
+
+
+def _finalize_invitation(invite, user):
+    msg = _apply_invitation(invite, user)
+    if msg:
+        invite.status = Invitation.STATUS_ACCEPTED
+        invite.accepted_at = datetime.now(timezone.utc)
+    return msg
+
+
+def _claim_pending_invites(user):
+    """Accept all pending invitations for the user's email. Returns count claimed."""
+    pending = (
+        db.session.query(Invitation)
+        .filter_by(email=user.email, status=Invitation.STATUS_PENDING)
+        .all()
+    )
+    claimed = 0
+    for invite in pending:
+        if _finalize_invitation(invite, user):
+            claimed += 1
+    if pending:
+        db.session.commit()
+    return claimed
+
+
+def _create_or_apply_invite(
+    *, kind, email, role, invited_by_id, org_id=None, dossier_id=None
+):
+    """Create a pending invite; if the invitee already has an account, apply it.
+
+    Returns (invite, applied_immediately: bool).
+    """
+    invite = Invitation(
+        token=_new_invite_token(),
+        email=email,
+        kind=kind,
+        role=role,
+        org_id=org_id,
+        dossier_id=dossier_id,
+        invited_by_id=invited_by_id,
+        status=Invitation.STATUS_PENDING,
+    )
+    db.session.add(invite)
+    db.session.flush()
+    user = db.session.query(User).filter_by(email=email).first()
+    if user is not None:
+        applied = bool(_finalize_invitation(invite, user))
+        db.session.commit()
+        return invite, applied
+    db.session.commit()
+    return invite, False
+
+
 def _dispatch_scan(job, target_dir):
     """Run the recon module for a job and return a human-readable message.
 
@@ -405,8 +503,15 @@ def register_routes(app):
             db.session.add(user)
             db.session.commit()
             login_user(user)
+            claimed = _claim_pending_invites(user)
             _audit("register", detail=email)
-            flash("Account created. Welcome to DossierForge.", "success")
+            if claimed:
+                flash(
+                    f"Account created. Accepted {claimed} pending invitation(s).",
+                    "success",
+                )
+            else:
+                flash("Account created. Welcome to DossierForge.", "success")
             return redirect(url_for("index"))
         return render_template("register.html")
 
@@ -422,7 +527,10 @@ def register_routes(app):
                 flash("Invalid email or password", "error")
                 return render_template("login.html")
             login_user(user)
+            claimed = _claim_pending_invites(user)
             _audit("login", detail=email)
+            if claimed:
+                flash(f"Accepted {claimed} pending invitation(s).", "success")
             return redirect(url_for("index"))
         return render_template("login.html")
 
@@ -565,6 +673,18 @@ def register_routes(app):
             role=role,
             can_edit=role in ("owner", "editor"),
             collaborators=dossier.shares if role == "owner" else None,
+            pending_invites=(
+                db.session.query(Invitation)
+                .filter_by(
+                    dossier_id=dossier.id,
+                    kind=Invitation.KIND_DOSSIER,
+                    status=Invitation.STATUS_PENDING,
+                )
+                .order_by(Invitation.created_at.desc())
+                .all()
+                if role == "owner"
+                else None
+            ),
             my_orgs=(
                 [m.organization for m in _my_memberships()] if role == "owner" else None
             ),
@@ -626,28 +746,25 @@ def register_routes(app):
         if not email:
             flash("Collaborator email is required", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        collaborator = db.session.query(User).filter_by(email=email).first()
-        if collaborator is None:
-            flash(f"No account found for {email}", "error")
-            return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        if collaborator.id == dossier.owner_id:
+        if email == current_user.email:
             flash("You already own this dossier", "error")
             return redirect(url_for("dossier_overview", dossier_id=dossier.id))
-        share = (
-            db.session.query(DossierShare)
-            .filter_by(dossier_id=dossier.id, user_id=collaborator.id)
-            .first()
+        invite, applied = _create_or_apply_invite(
+            kind=Invitation.KIND_DOSSIER,
+            email=email,
+            role=role,
+            invited_by_id=current_user.id,
+            dossier_id=dossier.id,
         )
-        if share:
-            share.role = role
-            flash(f"Updated {email} to {role}", "success")
-        else:
-            db.session.add(
-                DossierShare(dossier_id=dossier.id, user_id=collaborator.id, role=role)
-            )
-            flash(f"Shared with {email} as {role}", "success")
-        db.session.commit()
         _audit("share_dossier", dossier_id=dossier.id, detail=f"{email}:{role}")
+        if applied:
+            flash(f"Shared with {email} as {role}", "success")
+        else:
+            flash(
+                f"Invitation sent to {email} as {role}. "
+                f"They can accept via /invite/{invite.token} after signing up.",
+                "success",
+            )
         return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
     @app.route("/dossier/<int:dossier_id>/unshare", methods=["POST"])
@@ -706,12 +823,23 @@ def register_routes(app):
             .filter(DossierOrgAccess.org_id == org.id)
             .all()
         )
+        pending_invites = (
+            db.session.query(Invitation)
+            .filter_by(
+                org_id=org.id,
+                kind=Invitation.KIND_ORG,
+                status=Invitation.STATUS_PENDING,
+            )
+            .order_by(Invitation.created_at.desc())
+            .all()
+        )
         return render_template(
             "org_detail.html",
             org=org,
             membership=membership,
             is_admin=membership.role == OrgMembership.ROLE_ADMIN,
             shared_dossiers=shared_dossiers,
+            pending_invites=pending_invites,
         )
 
     @app.route("/orgs/<int:org_id>/members", methods=["POST"])
@@ -725,24 +853,77 @@ def register_routes(app):
         if not email:
             flash("Member email is required", "error")
             return redirect(url_for("org_detail", org_id=org.id))
-        user = db.session.query(User).filter_by(email=email).first()
-        if user is None:
-            flash(f"No account found for {email}", "error")
+        if email == current_user.email:
+            flash("You are already a member", "error")
             return redirect(url_for("org_detail", org_id=org.id))
-        existing = (
-            db.session.query(OrgMembership)
-            .filter_by(org_id=org.id, user_id=user.id)
-            .first()
+        invite, applied = _create_or_apply_invite(
+            kind=Invitation.KIND_ORG,
+            email=email,
+            role=role,
+            invited_by_id=current_user.id,
+            org_id=org.id,
         )
-        if existing:
-            existing.role = role
-            flash(f"Updated {email} to {role}", "success")
-        else:
-            db.session.add(OrgMembership(org_id=org.id, user_id=user.id, role=role))
-            flash(f"Added {email} as {role}", "success")
-        db.session.commit()
         _audit("add_org_member", detail=f"{org.name}:{email}:{role}")
+        if applied:
+            flash(f"Added {email} as {role}", "success")
+        else:
+            flash(
+                f"Invitation sent to {email} as {role}. "
+                f"They can accept via /invite/{invite.token} after signing up.",
+                "success",
+            )
         return redirect(url_for("org_detail", org_id=org.id))
+
+    @app.route("/invites/<int:invite_id>/revoke", methods=["POST"])
+    @login_required
+    def revoke_invite(invite_id):
+        invite = db.session.get(Invitation, invite_id)
+        if invite is None or invite.status != Invitation.STATUS_PENDING:
+            abort(404)
+        if invite.kind == Invitation.KIND_ORG:
+            _get_org_membership(invite.org_id, need_admin=True)
+            redirect_to = url_for("org_detail", org_id=invite.org_id)
+        elif invite.kind == Invitation.KIND_DOSSIER:
+            _get_dossier_access(invite.dossier_id, "owner")
+            redirect_to = url_for("dossier_overview", dossier_id=invite.dossier_id)
+        else:
+            abort(404)
+        invite.status = Invitation.STATUS_REVOKED
+        db.session.commit()
+        _audit("revoke_invite", detail=f"{invite.email}:{invite.kind}")
+        flash(f"Revoked invitation for {invite.email}", "success")
+        return redirect(redirect_to)
+
+    @app.route("/invite/<token>", methods=["GET", "POST"])
+    def accept_invite(token):
+        invite = db.session.query(Invitation).filter_by(token=token).first()
+        if invite is None:
+            abort(404)
+        if invite.status != Invitation.STATUS_PENDING:
+            flash("This invitation is no longer pending.", "error")
+            return redirect(
+                url_for("index") if current_user.is_authenticated else url_for("login")
+            )
+        if request.method == "GET" and not current_user.is_authenticated:
+            return render_template("accept_invite.html", invite=invite)
+        if not current_user.is_authenticated:
+            flash("Sign in or create an account to accept this invitation.", "error")
+            return redirect(url_for("register"))
+        if current_user.email != invite.email:
+            flash(
+                f"This invitation was sent to {invite.email}. "
+                "Sign in with that email to accept it.",
+                "error",
+            )
+            return redirect(url_for("index"))
+        msg = _finalize_invitation(invite, current_user)
+        db.session.commit()
+        if msg:
+            _audit("accept_invite", detail=f"{invite.kind}:{invite.email}")
+            flash(msg, "success")
+        else:
+            flash("Could not accept this invitation.", "error")
+        return redirect(url_for("index"))
 
     @app.route("/orgs/<int:org_id>/members/<int:user_id>/remove", methods=["POST"])
     @login_required

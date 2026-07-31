@@ -36,12 +36,40 @@
                         </select>
                     </div>
                     <div class="col-sm-3">
-                        <button type="submit" class="btn btn-primary btn-sm w-100">Add</button>
+                        <button type="submit" class="btn btn-primary btn-sm w-100">Invite</button>
                     </div>
                 </form>
+                <div class="form-text mt-2">Works for existing accounts and new emails (pending until they sign up).</div>
                 {% endif %}
             </div>
         </div>
+
+        {% if is_admin %}
+        <div class="card mb-3">
+            <div class="card-header"><h5 class="mb-0">Pending invitations</h5></div>
+            <div class="card-body">
+                {% if pending_invites %}
+                    <ul class="list-group list-group-flush">
+                        {% for invite in pending_invites %}
+                        <li class="list-group-item">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span>{{ invite.email }} <span class="badge bg-warning text-dark">{{ invite.role }}</span></span>
+                                <form method="post" action="{{ url_for('revoke_invite', invite_id=invite.id) }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Revoke</button>
+                                </form>
+                            </div>
+                            <div class="small text-muted mt-1">
+                                Accept link: <code>{{ url_for('accept_invite', token=invite.token, _external=False) }}</code>
+                            </div>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="text-muted mb-0">No pending invitations.</p>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <div class="col-md-6">
