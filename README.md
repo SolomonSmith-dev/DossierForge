@@ -23,7 +23,7 @@ Security researchers and pentesters spend the first hour of any engagement runni
 - Async scans: recon runs are queued to a background worker (non-blocking) with a live Scan Jobs status panel
 - Notes & tags: attach investigator notes and categorize dossiers with tags
 - Search: filter dossiers by name, organization, or tag from the dashboard
-- Dossier management: create, browse, export, and delete target profiles via web UI
+- Dossier management: create, edit metadata, browse, export, and delete target profiles via web UI
 - Reporting: export a dossier (incl. notes & tags) as a Markdown report or raw JSON
 
 ## Stack
