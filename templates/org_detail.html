@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ org.name }} - DossierForge{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">{{ org.name }} <span class="badge bg-info text-dark align-middle">{{ membership.role }}</span></h1>
+    <a href="{{ url_for('orgs') }}" class="btn btn-outline-secondary btn-sm">Back to organizations</a>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card mb-3">
+            <div class="card-header"><h5 class="mb-0">Members</h5></div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush mb-3">
+                    {% for m in org.memberships %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>{{ m.user.email }} <span class="badge bg-secondary">{{ m.role }}</span></span>
+                        {% if is_admin and m.user_id != membership.user_id %}
+                        <form method="post" action="{{ url_for('remove_org_member', org_id=org.id, user_id=m.user_id) }}">
+                            <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                        </form>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% if is_admin %}
+                <form method="post" action="{{ url_for('add_org_member', org_id=org.id) }}" class="row g-2">
+                    <div class="col-sm-6">
+                        <input type="email" class="form-control form-control-sm" name="email"
+                               placeholder="member@example.com" required>
+                    </div>
+                    <div class="col-sm-3">
+                        <select class="form-select form-select-sm" name="role">
+                            <option value="member">Member</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="col-sm-3">
+                        <button type="submit" class="btn btn-primary btn-sm w-100">Invite</button>
+                    </div>
+                </form>
+                <div class="form-text mt-2">Works for existing accounts and new emails (pending until they sign up).</div>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if is_admin %}
+        <div class="card mb-3">
+            <div class="card-header"><h5 class="mb-0">Pending invitations</h5></div>
+            <div class="card-body">
+                {% if pending_invites %}
+                    <ul class="list-group list-group-flush">
+                        {% for invite in pending_invites %}
+                        <li class="list-group-item">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span>{{ invite.email }} <span class="badge bg-warning text-dark">{{ invite.role }}</span></span>
+                                <form method="post" action="{{ url_for('revoke_invite', invite_id=invite.id) }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Revoke</button>
+                                </form>
+                            </div>
+                            <div class="small text-muted mt-1">
+                                Accept link: <code>{{ url_for('accept_invite', token=invite.token, _external=False) }}</code>
+                            </div>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="text-muted mb-0">No pending invitations.</p>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="col-md-6">
+        <div class="card mb-3">
+            <div class="card-header"><h5 class="mb-0">Dossiers shared with this organization</h5></div>
+            <div class="card-body">
+                {% if shared_dossiers %}
+                    <ul class="list-group list-group-flush">
+                        {% for dossier, role in shared_dossiers %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <a href="{{ url_for('dossier_overview', dossier_id=dossier.id) }}">{{ dossier.name }}</a>
+                            <span class="badge bg-info text-dark">{{ role }}</span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="text-muted mb-0">No dossiers shared with this organization yet.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

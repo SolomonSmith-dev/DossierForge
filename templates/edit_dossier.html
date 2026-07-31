@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ dossier.name }} - DossierForge{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-7">
+        <h1 class="h3 mb-3">Edit dossier</h1>
+        <form method="post">
+            <div class="mb-3">
+                <label for="name" class="form-label">Name</label>
+                <input type="text" class="form-control" id="name" name="name"
+                       value="{{ dossier.name }}" required>
+            </div>
+            <div class="mb-3">
+                <label for="alias" class="form-label">Alias</label>
+                <input type="text" class="form-control" id="alias" name="alias"
+                       value="{{ dossier.alias or '' }}">
+            </div>
+            <div class="mb-3">
+                <label for="organization" class="form-label">Organization</label>
+                <input type="text" class="form-control" id="organization" name="organization"
+                       value="{{ dossier.organization or '' }}">
+            </div>
+            <div class="mb-3">
+                <label for="authorization_scope" class="form-label">Authorization scope / reference</label>
+                <textarea class="form-control" id="authorization_scope" name="authorization_scope"
+                          rows="2">{{ dossier.authorization_scope or '' }}</textarea>
+                <div class="form-text">Record what authorizes this investigation (engagement, ticket, ownership).</div>
+            </div>
+            <button type="submit" class="btn btn-success">Save</button>
+            <a href="{{ url_for('dossier_overview', dossier_id=dossier.id) }}" class="btn btn-secondary">Cancel</a>
+        </form>
+    </div>
+</div>
+{% endblock %}
