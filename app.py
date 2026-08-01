@@ -48,6 +48,7 @@ from models import (
     db,
 )
 from modules.export import render_json, render_markdown
+from modules.mail import send_invitation_email
 from modules.nmap import get_nmap_summary, get_open_ports, run_nmap_scan
 from modules.osint import (
     check_breach_data,
@@ -103,6 +104,15 @@ def create_app(config=None):
         # Skip auto-applying migrations (e.g. while generating a new revision).
         SKIP_DB_UPGRADE=os.environ.get("SKIP_DB_UPGRADE", "").lower()
         in ("1", "true", "yes"),
+        # Outbound email (invitations). Default console logs to stdout.
+        MAIL_BACKEND=os.environ.get("MAIL_BACKEND", "console"),
+        MAIL_FROM=os.environ.get("MAIL_FROM", "noreply@dossierforge.local"),
+        MAIL_SERVER=os.environ.get("MAIL_SERVER", ""),
+        MAIL_PORT=int(os.environ.get("MAIL_PORT", "587")),
+        MAIL_USE_TLS=os.environ.get("MAIL_USE_TLS", "true").lower()
+        in ("1", "true", "yes"),
+        MAIL_USERNAME=os.environ.get("MAIL_USERNAME", ""),
+        MAIL_PASSWORD=os.environ.get("MAIL_PASSWORD", ""),
     )
     if config:
         app.config.update(config)
@@ -392,6 +402,12 @@ def _create_or_apply_invite(
         return invite, applied
     db.session.commit()
     return invite, False
+
+
+def _notify_pending_invite(invite, invited_by_email=None):
+    """Email the invitee a link to accept. Soft-fails (returns False)."""
+    accept_url = url_for("accept_invite", token=invite.token, _external=True)
+    return send_invitation_email(invite, accept_url, invited_by_email=invited_by_email)
 
 
 def _dispatch_scan(job, target_dir):
@@ -868,11 +884,19 @@ def register_routes(app):
         if applied:
             flash(f"Shared with {email} as {role}", "success")
         else:
-            flash(
-                f"Invitation sent to {email} as {role}. "
-                f"They can accept via /invite/{invite.token} after signing up.",
-                "success",
-            )
+            mailed = _notify_pending_invite(invite, invited_by_email=current_user.email)
+            if mailed:
+                flash(
+                    f"Invitation emailed to {email} as {role}. "
+                    "They can also use the accept link shown below after signing up.",
+                    "success",
+                )
+            else:
+                flash(
+                    f"Invitation created for {email} as {role}, but email could not "
+                    f"be sent. Share this link: /invite/{invite.token}",
+                    "error",
+                )
         return redirect(url_for("dossier_overview", dossier_id=dossier.id))
 
     @app.route("/dossier/<int:dossier_id>/unshare", methods=["POST"])
@@ -975,11 +999,19 @@ def register_routes(app):
         if applied:
             flash(f"Added {email} as {role}", "success")
         else:
-            flash(
-                f"Invitation sent to {email} as {role}. "
-                f"They can accept via /invite/{invite.token} after signing up.",
-                "success",
-            )
+            mailed = _notify_pending_invite(invite, invited_by_email=current_user.email)
+            if mailed:
+                flash(
+                    f"Invitation emailed to {email} as {role}. "
+                    "They can also use the accept link shown below after signing up.",
+                    "success",
+                )
+            else:
+                flash(
+                    f"Invitation created for {email} as {role}, but email could not "
+                    f"be sent. Share this link: /invite/{invite.token}",
+                    "error",
+                )
         return redirect(url_for("org_detail", org_id=org.id))
 
     @app.route("/invites/<int:invite_id>/revoke", methods=["POST"])

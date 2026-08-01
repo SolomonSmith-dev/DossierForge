@@ -15,7 +15,7 @@ Security researchers and pentesters spend the first hour of any engagement runni
 - Multi-user accounts: register, sign in, and keep dossiers isolated per user
 - Collaboration: share a dossier with teammates as viewer (read-only) or editor (can run recon)
 - Organizations: create team workspaces, manage members (admin/member), and share dossiers with a whole team at a role
-- Invitations: invite collaborators/org members by email before they have an account; claimed on signup or via invite link
+- Invitations: invite collaborators/org members by email before they have an account; an invite email is sent (console/SMTP) and claimed on signup or via invite link
 - Authorized-use attestation: creating a dossier requires confirming authorization; the attestation and scope are recorded
 - Audit trail: every dossier action and recon run is logged per dossier
 - WHOIS lookup: domain registration data, registrar, nameservers, expiry
@@ -63,6 +63,10 @@ cp .env.example .env
 | `SCAN_JOBS_EAGER` | no | If `true`, run scans inline instead of on the durable DB poller (tests use this) |
 | `SCAN_WORKER_ENABLED` | no | If `false`, do not start the background poller (jobs stay `queued` until processed) |
 | `SCAN_WORKER_POLL_SECONDS` | no | Poll interval for the durable scan worker (default `0.5`) |
+| `MAIL_BACKEND` | no | `console` (default), `smtp`, or `memory` (tests) |
+| `MAIL_FROM` | no | From address for outbound mail |
+| `MAIL_SERVER` / `MAIL_PORT` / `MAIL_USE_TLS` | no | SMTP settings when `MAIL_BACKEND=smtp` |
+| `MAIL_USERNAME` / `MAIL_PASSWORD` | no | SMTP auth (optional) |
 | `GITHUB_TOKEN` | no | GitHub PAT for higher API rate limits (used in GitHub lookups) |
 | `NMAP_PATH` | no | Absolute path to `nmap` if not on `$PATH` |
 
