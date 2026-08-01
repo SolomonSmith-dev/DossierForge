@@ -24,10 +24,15 @@ def app(tmp_path):
             "DOSSIER_DATA_DIR": str(tmp_path / "data"),
             # Run scan jobs inline so tests are deterministic (no worker thread).
             "SCAN_JOBS_EAGER": True,
+            # Capture outbound invite mail in memory for assertions.
+            "MAIL_BACKEND": "memory",
         }
     )
     os.makedirs(application.config["DOSSIER_DATA_DIR"], exist_ok=True)
     yield application
+    from modules.mail import clear_outbox
+
+    clear_outbox()
 
 
 @pytest.fixture
