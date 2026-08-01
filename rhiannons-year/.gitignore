@@ -1,0 +1,17 @@
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+.DS_Store
+*.swp
+*~.nib
+timeline.xctimeline
+playground.xcworkspace
+.swiftpm/
+Package.resolved
