@@ -195,7 +195,7 @@
                                     <button type="submit" class="btn btn-outline-danger btn-sm">Revoke</button>
                                 </form>
                             </div>
-                            <div class="small text-muted"><code>{{ url_for('accept_invite', token=invite.token, _external=False) }}</code></div>
+                            <div class="small text-muted">Invite emailed · accept link: <code>{{ url_for('accept_invite', token=invite.token, _external=False) }}</code></div>
                         </li>
                         {% endfor %}
                     </ul>

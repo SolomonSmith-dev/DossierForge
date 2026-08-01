@@ -16,9 +16,12 @@ Postgres-ready via `DATABASE_URL`); large recon artifacts are written to disk un
   with a temp SQLite DB and temp `DOSSIER_DATA_DIR` (see `tests/conftest.py`).
 - Invitations (`Invitation` model): org admins and dossier owners can invite by
   email even when the invitee has no account. Existing accounts are granted access
-  immediately; otherwise the invite stays `pending` until claimed on register/login
-  (`_claim_pending_invites`) or via `/invite/<token>`. Revoke with
-  `POST /invites/<id>/revoke`. Generating a new revision after model changes:
+  immediately; otherwise the invite stays `pending`, an email is sent via
+  `modules/mail.py` (`MAIL_BACKEND=console|memory|smtp`), and access is claimed on
+  register/login (`_claim_pending_invites`) or via `/invite/<token>`. Revoke with
+  `POST /invites/<id>/revoke`. Default backend is `console` (prints to stdout);
+  tests use `memory`. Set `MAIL_SERVER` + `MAIL_BACKEND=smtp` for real delivery.
+  Generating a new revision after model changes:
   `SKIP_DB_UPGRADE=1 flask --app "app:create_app" db migrate -m "..."`.
 - The `instance/` folder (DB + recon artifacts) is gitignored; deleting it resets all
   local users and dossiers (migrations will recreate the schema on next start).
